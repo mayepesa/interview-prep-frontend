@@ -1,0 +1,11 @@
+/* CSS Modules: estas clases se renombran al compilar (ej. card_x7a2), no chocan con otras. */
+.card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
+}
