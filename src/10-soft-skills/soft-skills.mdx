@@ -1,0 +1,146 @@
+import { Example, Pitfall, SayIt, Tip } from "../app/study";
+
+export const meta = {
+  title: "Comunicación técnica",
+  section: "soft-skills",
+  order: 10,
+  summary:
+    "Cómo explicar una decisión técnica, trabajar sin especificación completa, responder cuando no sabes algo y comunicarte en un equipo remoto y multicultural. Se evalúa durante toda la entrevista, no en una pregunta aparte.",
+};
+
+## ¿Por qué importan tanto en una entrevista senior?
+
+En una vacante senior, la mitad de los requisitos no son de código: explicar decisiones, empezar sin una especificación completa, escribir specs con el equipo, aprender temas nuevos y comunicarse con gente de otros países y otros roles.
+
+El entrevistador no te va a preguntar "¿tienes buena comunicación?". Lo va a notar en **cómo** respondes todo lo demás: si explicas por qué elegiste algo, si haces preguntas antes de codear, si dices "no sé" con elegancia, si piensas en voz alta. Por eso esta página es de patrones para responder, no de teoría para memorizar.
+
+## ¿Cómo explicas una decisión técnica?
+
+Usa siempre la misma estructura: **contexto → opciones → elección → trade-off**. El trade-off es lo que más se nota en un perfil senior: muestra que sabes que toda decisión tiene un costo.
+
+- **Contexto**: qué problema había y qué restricciones (tiempo, equipo, rendimiento).
+- **Opciones**: dos o tres alternativas reales.
+- **Elección**: cuál y por qué, conectada con el contexto.
+- **Trade-off**: qué se pierde con esa elección y cómo lo mitigaste.
+
+<Example title="una respuesta con la estructura">
+
+> _We needed to share UI between three teams. The options were copying components, a monorepo, or a published library. I chose an npm library documented in Storybook, because the teams deployed independently. The trade-off was versioning: breaking changes could affect everyone, so we used semantic versioning and a changelog._
+
+</Example>
+
+Frases útiles:
+
+- _The main trade-off here is…_
+- _I chose X over Y because…_
+- _It depends on… If the list is small I'd keep it simple; if it grows, I'd virtualize it._
+- _What I'd measure first is…_
+
+<Pitfall>
+  Responder solo con la solución ("usé Redux") sin contexto ni alternativas. Suena a que la decisión
+  no fue tuya o no la pensaste.
+</Pitfall>
+
+## ¿Cómo empiezas a trabajar sin una especificación completa?
+
+Lo que quieren oír: que no te bloqueas, que preguntas **lo justo** (lo que cambiaría el diseño) y que haces visibles tus supuestos para que el equipo pueda corregirte temprano.
+
+1. Lista lo que sabes y lo que asumes.
+2. Pregunta solo lo que cambiaría la solución.
+3. Empieza por la parte que no va a cambiar.
+4. Comparte algo temprano: un borrador, una prueba de concepto pequeña o una nota técnica corta.
+
+<Example title="preguntas antes de un ejercicio en vivo">
+
+- _What should happen when the list is empty, or when the request fails?_
+- _How much data are we talking about: tens or thousands of rows?_
+- _Do we need to support keyboard users and mobile here?_
+- _Can I assume the API returns this shape, or should I handle other cases?_
+
+</Example>
+
+<SayIt>
+  If the spec isn't complete, I list my assumptions, ask only the questions that would change the
+  design, and start with the parts that won't change. I share a draft early, like a small proof of
+  concept or a short technical note, so the team can correct me before I go too far.
+</SayIt>
+
+## ¿Cómo escribes una especificación técnica con el equipo?
+
+Una spec técnica corta alinea al equipo antes de construir algo grande. No hace falta un documento largo: una o dos páginas con estas secciones.
+
+| Sección                      | Qué responde                                                  |
+| ---------------------------- | ------------------------------------------------------------- |
+| **Problem**                  | Qué duele y a quién.                                          |
+| **Goals / non-goals**        | Qué entra y, sobre todo, qué no.                              |
+| **Proposal**                 | Componentes, flujo de datos, API, estados de la UI.           |
+| **Alternatives considered**  | Qué más se evaluó y por qué no.                               |
+| **Risks and open questions** | Lo que no sabemos todavía.                                    |
+| **Rollout**                  | Feature flag, métricas para saber si funcionó, cómo revertir. |
+
+<SayIt>
+  For bigger changes I write a short technical spec: the problem, goals and non-goals, the proposal,
+  the alternatives we considered, risks, and how we'll roll it out behind a feature flag. Then we
+  review it together before building.
+</SayIt>
+
+## ¿Qué dices cuando no sabes algo?
+
+Nunca te quedes callada ni inventes: los entrevistadores lo detectan enseguida y es peor que no saber. La fórmula: **lo que sí sé + cómo lo averiguaría + algo parecido que hice**.
+
+<Example title="respuestas honestas que suman">
+
+> _I haven't used that in production. My understanding is that it works like…, and I'd confirm it by reading the docs and building a small example. Something similar I did was…_
+
+Con un requisito que no tienes, por ejemplo Java o Kotlin cuando son "un plus":
+
+> _I haven't worked with Java or Kotlin professionally; my experience is JavaScript and TypeScript. I'm comfortable reading backend code to understand an API, and I'd be happy to learn._
+
+</Example>
+
+<Tip title="Ganar tiempo para pensar">
+  Está bien pausar. *"Let me think about that for a second."* suena seguro; un silencio largo sin
+  aviso, no.
+</Tip>
+
+## ¿Cómo te comunicas en un equipo remoto y multicultural?
+
+En un equipo distribuido, la comunicación escrita reemplaza a las conversaciones de pasillo. Lo que se espera:
+
+- **Escribir claro y asíncrono**: contexto, qué pasó, qué necesitas y para cuándo, en un solo mensaje.
+- **Confirmar lo entendido**: _"Just to make sure I got it: you'd like… right?"_
+- **No asumir que el silencio es acuerdo**: en llamadas, pregunta directamente a quien no habló.
+- **Cuidar los husos horarios**: deja notas para quien empieza su día después que tú.
+- **Avisar bloqueos temprano**, no al final del sprint.
+
+<SayIt>
+  Working remotely, I over-communicate in writing: I post updates before I'm asked, write down
+  decisions from calls, and flag blockers early. With people from different cultures I confirm what
+  I understood instead of assuming.
+</SayIt>
+
+## ¿Cómo trabajas con producto, diseño, QA y technical writers?
+
+| Rol                   | Qué aportas                                                                                                               |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| **Producto**          | Entender el problema y la métrica de éxito, no solo el ticket. Proponer alternativas más baratas cuando existen.          |
+| **Diseño**            | Preguntar por estados vacíos, de carga y de error; avisar temprano si algo es caro de construir; cuidar la accesibilidad. |
+| **QA**                | Compartir los casos borde que ya probaste y cómo reproducir cada escenario.                                               |
+| **Technical writers** | Explicar el comportamiento visible y avisar de los cambios que afectan la documentación.                                  |
+
+<SayIt>
+  I like to get involved early with product and design: I ask about empty, loading and error states
+  before I start, and I share work in progress. With QA I share the edge cases I already tested, so
+  we don't duplicate work.
+</SayIt>
+
+## Frases para el live coding
+
+| Momento          | Frase                                                                 |
+| ---------------- | --------------------------------------------------------------------- |
+| Antes de empezar | _I'm going to talk through my approach before I write code._          |
+| Plan             | _First I'll make it work, then I'll add types and handle edge cases._ |
+| Pensando         | _Let me think about that for a second._                               |
+| No entendiste    | _Could you repeat the last part? I want to make sure I understand._   |
+| Atascada         | _I'm stuck on this part. My idea is…, does that sound reasonable?_    |
+| Al terminar      | _If I had more time, I'd add tests for… and handle…_                  |

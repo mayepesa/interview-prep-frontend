@@ -1,0 +1,468 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  Badge,
+  ButtonDemo,
+  CompositionDemo,
+  ElementInspector,
+  JsxRulesForm,
+  JsxVsCreateElement,
+} from "./components-jsx-props.examples";
+
+export const meta = {
+  title: "Componentes, JSX y props",
+  section: "react-basics",
+  order: 20,
+  summary:
+    "Qué es un componente, qué es un elemento, cómo se transforma JSX y cuáles son sus reglas, cómo se pasan props y children, y por qué React prefiere la composición a la herencia.",
+};
+
+## ¿Qué es un componente y cómo se crea?
+
+Un **componente** es una pieza de UI reutilizable con su propia lógica y apariencia. En React moderno es simplemente una **función de JavaScript** que:
+
+1. recibe un objeto de **props** (sus datos de entrada),
+2. devuelve lo que se debe mostrar: JSX, un texto, un número, `null` (no mostrar nada) o un array de elementos.
+
+Reglas para que React lo trate como componente:
+
+- El nombre empieza con **mayúscula** (`TaskRow`, no `taskRow`). Con minúscula, JSX lo interpreta como una etiqueta HTML (`<taskRow>` sería un elemento desconocido del DOM).
+- Se declara en el **nivel superior** del módulo, nunca dentro de otro componente.
+- Debe ser **puro** durante el render: con las mismas props y el mismo estado devuelve lo mismo, y no modifica nada fuera de sí.
+
+### Componentes de función vs de clase
+
+Antes de 2019 (hooks), los componentes con estado se escribían como **clases** que extendían `React.Component`, con `this.state` y métodos de ciclo de vida (`componentDidMount`…). Siguen funcionando, pero hoy todo código nuevo usa **funciones con hooks**: son más cortas, se componen mejor (custom hooks) y no tienen los problemas de `this`. La única pieza que aún requiere clase es un **Error Boundary**.
+
+<Example title="un componente con props tipadas">
+
+```tsx
+type BadgeProps = { label: string; tone?: "info" | "success" };
+
+export function Badge({ label, tone = "info" }: BadgeProps) {
+  const color = tone === "success" ? "var(--good)" : "var(--accent)";
+  return <span style={{ color, border: `1px solid ${color}` }}>{label}</span>;
+}
+
+// Se usa como una etiqueta:
+<Badge label="Con JSX" />
+<Badge label="Aprobado" tone="success" />
+```
+
+<Live>
+  <div className="row">
+    <Badge label="Con JSX" />
+    <Badge label="Aprobado" tone="success" />
+  </div>
+</Live>
+
+</Example>
+
+<SayIt>
+  A component is a function that receives props and returns what should be rendered. Its name must
+  start with a capital letter so JSX treats it as a component instead of an HTML tag, and it should
+  be pure during render. Today I write function components with hooks; class components are mostly
+  legacy, except for error boundaries.
+</SayIt>
+
+## ¿Qué diferencia hay entre componente y elemento?
+
+Es una pregunta trampa muy común porque en el día a día se mezclan las palabras:
+
+|               | Componente                              | Elemento                              |
+| ------------- | --------------------------------------- | ------------------------------------- |
+| Qué es        | Una **función** (o clase)               | Un **objeto** plano e inmutable       |
+| Ejemplo       | `Badge`                                 | `<Badge label="32 h" />`              |
+| Quién lo crea | Tú lo declaras una vez                  | JSX / `createElement`, en cada render |
+| Qué contiene  | Lógica: hooks, cálculos, JSX de retorno | `type`, `props`, `key`                |
+
+Cuando escribes `<Badge label="32 h" />` **no** se ejecuta `Badge`. Solo se crea un objeto que dice "aquí va un `Badge` con estas props". Es React quien decide **cuándo** llamar a la función (durante el render) y cuántas veces. Por eso nunca deberías llamar a un componente como función normal (`Badge({ label })`): rompes las reglas de los hooks y React no puede rastrear su estado.
+
+Los elementos son **inmutables**: para cambiar la UI no modificas un elemento, generas uno nuevo en el siguiente render.
+
+<Example title="lo que hay dentro de un elemento">
+
+```tsx
+const element = <Badge label="32 h" tone="success" />;
+
+typeof element; // "object"
+element.type === Badge; // true: type apunta a la función del componente
+element.props; // { label: "32 h", tone: "success" }
+element.key; // null
+```
+
+<Live>
+  <ElementInspector />
+</Live>
+
+</Example>
+
+<SayIt>
+  A component is the function; an element is the plain object that JSX creates, describing which
+  component or tag to render and with which props. Creating an element doesn't run the component;
+  React decides when to call it during rendering.
+</SayIt>
+
+## ¿Qué es JSX y cómo se transforma?
+
+**JSX** (JavaScript XML) es una extensión de sintaxis que permite escribir algo parecido a HTML dentro de JavaScript. El navegador **no entiende JSX**: un compilador (Babel, SWC, esbuild, el de TypeScript) lo transforma en llamadas a funciones antes de ejecutarlo.
+
+Desde React 17 se usa el **nuevo JSX transform**: el compilador importa automáticamente `jsx` desde `react/jsx-runtime`. Por eso ya **no** hace falta escribir `import React from "react"` en cada archivo.
+
+```tsx
+// Lo que escribes
+const el = <Badge label="Con JSX" tone="success" />;
+
+// Lo que genera el compilador (nuevo transform)
+import { jsx as _jsx } from "react/jsx-runtime";
+const el = _jsx(Badge, { label: "Con JSX", tone: "success" });
+
+// Equivalente con la API clásica, que aún existe
+const el2 = createElement(Badge, { label: "Con JSX", tone: "success" });
+```
+
+Consecuencias que se preguntan en entrevistas:
+
+- Entre llaves `{}` va **cualquier expresión** de JavaScript (una variable, una llamada, un ternario), pero **no** sentencias (`if`, `for`, `const`).
+- Las etiquetas en minúscula se convierten en strings (`"div"`); en mayúscula, en referencias a variables (`Badge`). Por eso los componentes van en mayúscula.
+- Los atributos se convierten en propiedades de un objeto, así que usan nombres de JavaScript (`className`, no `class`).
+- JSX **escapa** automáticamente los strings que insertas, lo que previene XSS. La única forma de insertar HTML crudo es `dangerouslySetInnerHTML`.
+
+<Example title="JSX y createElement producen lo mismo">
+
+```tsx
+const withJsx = <Badge label="Con JSX" />;
+const withoutJsx = createElement(Badge, { label: "Sin JSX", tone: "success" });
+
+return (
+  <div className="row">
+    {withJsx}
+    {withoutJsx}
+  </div>
+);
+```
+
+<Live>
+  <JsxVsCreateElement />
+</Live>
+
+</Example>
+
+<SayIt>
+  JSX is syntax sugar that a compiler turns into function calls; with the modern transform, each tag
+  becomes a call to jsx from react/jsx-runtime, which returns an element object. That's why only
+  expressions are allowed inside curly braces, and why JSX escapes strings by default.
+</SayIt>
+
+## ¿Cuáles son las reglas de JSX?
+
+1. **Un solo elemento raíz.** Una función solo puede devolver un valor, así que varios hermanos deben ir envueltos. Si no quieres un `<div>` extra, usa un **Fragment** (`<>…</>`).
+2. **Todas las etiquetas se cierran**, incluso las vacías: `<input />`, `<br />`, `<img />`.
+3. **Atributos en camelCase**: `onClick`, `tabIndex`, `strokeWidth`. Excepciones: `aria-*` y `data-*` se escriben con guion.
+4. **`className` en vez de `class`** y **`htmlFor` en vez de `for`**, porque `class` y `for` son palabras reservadas de JavaScript (y coinciden con las propiedades del DOM `element.className` y `label.htmlFor`).
+5. **`style` recibe un objeto**, no un string: `style={{ color: "red", marginTop: 8 }}`. Las propiedades van en camelCase y los números se interpretan como píxeles.
+6. **Expresiones entre llaves**: `{count}`, `{user.name}`, `{isOpen ? "Cerrar" : "Abrir"}`.
+7. **Comentarios**: dentro del JSX se escriben como `{/* comentario */}`. Un `//` suelto se mostraría como texto.
+8. `true`, `false`, `null` y `undefined` no se renderizan. El número `0` **sí** (ver la página de renderizado condicional).
+
+<Example title="las reglas en un formulario pequeño">
+
+```tsx
+function HoursField() {
+  const [hours, setHours] = useState(8);
+  return (
+    <>
+      {/* htmlFor conecta el label con el input */}
+      <label htmlFor="hours" className="note">
+        Horas de hoy
+      </label>
+      <input
+        id="hours"
+        type="number"
+        value={hours}
+        onChange={(e) => setHours(Number(e.target.value))}
+        style={{ width: 80 }}
+      />
+      <p style={{ color: hours > 8 ? "red" : "green", fontWeight: 600 }}>
+        {hours > 8 ? `${hours - 8} h extra` : "Jornada normal"}
+      </p>
+    </>
+  );
+}
+```
+
+<Live hint="haz clic en el texto del label: el foco va al input">
+  <JsxRulesForm />
+</Live>
+
+</Example>
+
+<SayIt>
+  JSX must return a single root, so I wrap siblings in a fragment. Every tag must be closed,
+  attributes are camelCase, and I use className and htmlFor because class and for are reserved
+  words. Comments go inside curly braces, and style takes an object.
+</SayIt>
+
+## ¿Qué son las props?
+
+Las **props** (propiedades) son los datos que un componente padre le pasa a un hijo, como los argumentos de una función. Pueden ser cualquier valor: strings, números, objetos, arrays, funciones (callbacks) e incluso otros elementos de JSX.
+
+Características clave:
+
+- **Son de solo lectura.** Un componente nunca debe modificar sus props (`props.title = …` está prohibido). Si algo tiene que cambiar, ese dato es **estado** (del componente o del padre).
+- **Fluyen hacia abajo** (flujo unidireccional). Para que un hijo "hable" con el padre, el padre le pasa una función: `onChange`, `onDelete`.
+- Se suelen **desestructurar** en la firma, con valores por defecto: `function Badge({ label, tone = "info" })`.
+- Con TypeScript se tipan con un `type` o `interface`; las opcionales llevan `?`.
+- Cuando el padre se re-renderiza con props nuevas, el hijo se re-renderiza con esos valores.
+
+Hay dos props especiales que React **no** pasa a tu componente: `key` (identidad en listas) y, hasta React 18, `ref`. En React 19, `ref` ya es una prop normal para componentes de función, así que `forwardRef` dejó de ser necesario.
+
+<Example title="props de datos y props de función">
+
+```tsx
+type TaskRowProps = {
+  title: string;
+  hours: number;
+  done?: boolean;
+  onToggle: () => void; // el hijo avisa, el padre decide
+};
+
+function TaskRow({ title, hours, done = false, onToggle }: TaskRowProps) {
+  return (
+    <li>
+      <input type="checkbox" checked={done} onChange={onToggle} />
+      {title} · {hours} h
+    </li>
+  );
+}
+
+<TaskRow title="Revisar PR" hours={2} onToggle={() => toggle("t1")} />;
+```
+
+</Example>
+
+<Pitfall>
+  Strings van entre comillas (`title="Daily"`); todo lo demás va entre llaves (`hours={2}`, `done=
+  {true}`). `hours="2"` pasa el string `"2"`, no el número, y TypeScript te avisará si la prop es
+  `number`.
+</Pitfall>
+
+<SayIt>
+  Props are the inputs of a component, passed from parent to child. They're read-only: a component
+  never modifies its props. To communicate upward, the parent passes a callback like onChange, so
+  data flows down and events flow up.
+</SayIt>
+
+## ¿Para qué sirve children?
+
+`children` es la prop que contiene **lo que pones entre la etiqueta de apertura y la de cierre** de un componente:
+
+```tsx
+<Card title="Resumen semanal">
+  <p>Esto llega como children</p>
+</Card>
+```
+
+Permite crear componentes "contenedor" (layouts, tarjetas, modales, providers) que **no saben ni necesitan saber** qué van a mostrar adentro. Su tipo en TypeScript es `ReactNode`, que acepta elementos, strings, números, arrays, `null`, etc.
+
+No estás limitado a `children`: cualquier prop puede recibir JSX. A eso se le llama **slots**: `<Dialog title={…} actions={…}>…</Dialog>`.
+
+<Example title="Card con children y Dialog con slots">
+
+```tsx
+function Card({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="card">
+      <strong>{title}</strong>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+function Dialog({
+  title,
+  children,
+  actions,
+}: {
+  title: ReactNode;
+  children: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <div role="group">
+      <strong>{title}</strong>
+      <div>{children}</div>
+      {actions && <div className="row">{actions}</div>}
+    </div>
+  );
+}
+```
+
+<Live hint="cada caja recibe contenido distinto sin saber cuál">
+  <CompositionDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  children is the prop that holds whatever I put between a component's opening and closing tags. It
+  lets me build generic containers like cards, layouts or modals that don't need to know their
+  content. For more than one area I pass JSX through named props, like a slot pattern.
+</SayIt>
+
+## ¿Qué es la composición y por qué React la prefiere a la herencia?
+
+**Composición** es construir componentes complejos **combinando** componentes más simples, en lugar de **heredar** de una clase base y sobrescribir métodos.
+
+React recomienda composición porque:
+
+- **Es más flexible**: un componente acepta contenido arbitrario (children, slots) en vez de depender de una jerarquía fija.
+- **Evita acoplamiento**: con herencia, cambiar la clase base puede romper todas las subclases.
+- **Es más explícita**: ves en el JSX qué piezas forman la UI.
+- La lógica reutilizable (no visual) se comparte con **custom hooks**, no con clases base.
+
+Las dos formas típicas:
+
+1. **Contención**: el componente recibe `children` o slots (Card, Dialog, Layout).
+2. **Especialización**: un componente específico **configura** a uno genérico. `DeleteDialog` es un `Dialog` con `tone="danger"` y un botón, sin heredar de nada.
+
+<Example title="especialización sin herencia">
+
+<Compare>
+<Bad>
+
+```tsx
+// Herencia: acoplado y frágil
+class DeleteDialog extends Dialog {
+  renderTitle() {
+    return "¿Borrar registro?";
+  }
+  renderActions() {
+    return <button>Sí, borrar</button>;
+  }
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+// Composición: DeleteDialog USA un Dialog
+function DeleteDialog({ itemName, onConfirm }: Props) {
+  return (
+    <Dialog
+      tone="danger"
+      title="¿Borrar registro?"
+      actions={<button onClick={onConfirm}>Sí, borrar</button>}
+    >
+      Vas a borrar <em>{itemName}</em>.
+    </Dialog>
+  );
+}
+```
+
+</Good>
+</Compare>
+
+<Live hint="el segundo bloque es un Dialog especializado">
+  <CompositionDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  React favors composition over inheritance. I build bigger components by combining smaller ones
+  through children and props, and I specialize a generic component by configuring it, not by
+  extending it. To reuse logic I use custom hooks.
+</SayIt>
+
+## ¿Exports nombrados o export default?
+
+Un módulo puede exportar valores de dos formas:
+
+```tsx
+// Export nombrado: el nombre es parte del contrato
+export function Badge() { … }
+import { Badge } from "./Badge";
+
+// Export default: uno por archivo, quien importa elige el nombre
+export default function Badge() { … }
+import Etiqueta from "./Badge"; // funciona, aunque el nombre no coincida
+```
+
+|                       | Nombrado                              | Default                                 |
+| --------------------- | ------------------------------------- | --------------------------------------- |
+| Cuántos por archivo   | Varios                                | Uno                                     |
+| Nombre al importar    | El mismo (o `as` explícito)           | El que quieras                          |
+| Refactor / renombrar  | El editor actualiza todos los imports | Puede quedar con nombres inconsistentes |
+| Autoimport y búsqueda | Mejor                                 | Peor                                    |
+
+Muchos equipos prefieren **exports nombrados** por consistencia y mejor soporte del editor. El `default` sigue siendo necesario donde una herramienta lo exige: `React.lazy(() => import("./Page"))` espera un default, y frameworks como Next.js lo requieren para `page.tsx` y `layout.tsx`.
+
+<Tip>
+  Con `React.lazy` y un export nombrado puedes adaptarlo:
+  `lazy(() => import("./Reports").then((m) => ({ default: m.Reports })))`.
+</Tip>
+
+<SayIt>
+  I prefer named exports because the name is part of the contract, refactors update every import,
+  and autocomplete works better. I use default exports where a tool requires them, like React.lazy
+  or Next.js page files.
+</SayIt>
+
+## ¿Por qué no pasar todas las props con spread?
+
+`<Child {...props} />` copia **todas** las props de un objeto. Es cómodo, pero usarlo sin pensar trae problemas:
+
+- **Props desconocidas llegan al DOM.** Si haces `<div {...props}>` y `props` trae `isActive`, React avisa "React does not recognize the `isActive` prop on a DOM element" y el atributo puede terminar en el HTML.
+- **API poco clara.** Leyendo el componente no sabes qué props usa de verdad; TypeScript tampoco te ayuda si el tipo es muy amplio.
+- **El orden importa y se pisan valores.** En `<Input {...props} type="text" />` el `type` final siempre es `"text"`; en `<Input type="text" {...props} />` gana el de `props`. Es fácil equivocarse.
+- **Re-renders y acoplamiento.** Pasas datos que el hijo no necesita; si cambian, el hijo se re-renderiza (y rompe `memo`).
+- **Seguridad.** Esparcir un objeto que viene de una API o de la URL puede inyectar atributos inesperados (por ejemplo, `dangerouslySetInnerHTML` o un `href`).
+
+**Cuándo sí tiene sentido**: en un componente que **envuelve un elemento nativo** (un `Button`, un `Input` de tu design system). Ahí desestructuras lo tuyo y reenvías el **resto** (`...rest`), tipado con `ComponentProps<"button">`, para que acepte `onClick`, `disabled`, `aria-*`, etc.
+
+<Example title="spread controlado en un wrapper">
+
+<Compare>
+<Bad>
+
+```tsx
+function TaskCard(props: any) {
+  // ¿qué usa? no se sabe; todo llega al <div>
+  return <div {...props}>{props.title}</div>;
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+type ButtonProps = ComponentProps<"button"> & {
+  variant?: "primary" | "ghost";
+};
+
+function Button({ variant = "primary", style, ...rest }: ButtonProps) {
+  return (
+    <button
+      type="button"
+      {...rest} // solo props válidas de <button>
+      style={{ background: variant === "primary" ? "blue" : "transparent", ...style }}
+    />
+  );
+}
+```
+
+</Good>
+</Compare>
+
+<Live hint="el wrapper acepta onClick, disabled y aria-label sin declararlos">
+  <ButtonDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  I avoid spreading all props blindly because unknown props leak to the DOM, the component's API
+  becomes unclear and values can be silently overridden. I use rest spread on purpose in wrappers
+  around native elements, typed with ComponentProps, after pulling out the props I handle myself.
+</SayIt>

@@ -1,0 +1,213 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  BasicContextDemo,
+  ConditionalUse,
+  NaiveContextDemo,
+  SplitContextDemo,
+} from "./context.examples";
+
+export const meta = {
+  title: "Context",
+  section: "react-intermediate",
+  order: 50,
+  summary:
+    "Cómo crear y consumir un contexto, qué cambia con `use` y el Provider de React 19, por qué Context provoca re-renders y cuándo conviene una librería de estado.",
+};
+
+## ¿Qué es Context y qué problema resuelve?
+
+Normalmente los datos bajan por **props**, de padre a hijo. Cuando un dato lo necesitan muchos componentes a distintas profundidades (el usuario logueado, el tema, el idioma), terminas pasándolo por componentes intermedios que no lo usan, solo para que llegue abajo. Eso se llama **prop drilling**.
+
+**Context** permite que un componente "publique" un valor y que **cualquier descendiente** lo lea directamente, sin pasar por los intermedios.
+
+Tiene tres piezas:
+
+1. `createContext(defaultValue)`: crea el contexto.
+2. El **Provider**: `<MiContexto value={...}>` envuelve un subárbol y define el valor.
+3. El **consumo**: `useContext(MiContexto)` o `use(MiContexto)` devuelve el valor del Provider **más cercano** hacia arriba. Si no hay ninguno, devuelve el `defaultValue`.
+
+Context es un mecanismo para **pasar** datos, no para **manejar** estado: el estado sigue viviendo en un `useState` o `useReducer` del Provider.
+
+<SayIt>
+  Context lets a component provide a value that any descendant can read without passing props
+  through every level, which avoids prop drilling. It's a way to pass data down, not a state manager
+  by itself: the state still lives in a useState or useReducer inside the provider.
+</SayIt>
+
+## ¿Cómo se crea y se consume un contexto?
+
+El patrón que se usa en proyectos reales tiene cuatro partes:
+
+1. Crear el contexto con tipo `T | null` y valor por defecto `null`.
+2. Un componente **Provider** propio que tiene el estado.
+3. Un **hook de consumo** (`useTheme`) que lanza un error claro si alguien lo usa fuera del Provider. Así TypeScript sabe que el valor no es `null`.
+4. Memoizar el `value` (lo vemos más abajo).
+
+En **React 19** el contexto mismo funciona como Provider: `<ThemeContext value={...}>`. Antes había que escribir `<ThemeContext.Provider value={...}>`, que sigue funcionando pero será deprecado.
+
+<Example title="tema con Provider propio y hook de consumo">
+
+```tsx
+type ThemeContextValue = { theme: Theme; toggle: () => void };
+const ThemeContext = createContext<ThemeContextValue | null>(null);
+
+function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setTheme] = useState<Theme>("dark");
+  const value = useMemo(
+    () => ({ theme, toggle: () => setTheme((t) => (t === "dark" ? "light" : "dark")) }),
+    [theme],
+  );
+  return <ThemeContext value={value}>{children}</ThemeContext>; // React 19
+}
+
+function useTheme() {
+  const ctx = useContext(ThemeContext);
+  if (!ctx) throw new Error("useTheme debe usarse dentro de <ThemeProvider>");
+  return ctx; // tipo ThemeContextValue, sin null
+}
+
+function ThemeToggle() {
+  const { toggle } = useTheme(); // sin props: lo lee del contexto
+  return <button onClick={toggle}>Cambiar tema</button>;
+}
+```
+
+<Live hint="Toolbar no recibe props; sus hijos leen el contexto">
+  <BasicContextDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  I create the context with a null default, wrap the state in my own Provider component, and expose
+  a custom hook like useTheme that throws if it's used outside the provider. In React 19 the context
+  itself can be rendered as the provider.
+</SayIt>
+
+## ¿Qué es `use` y en qué se diferencia de useContext?
+
+`use` es una API de React 19 que lee el valor de un **recurso**: un contexto o una promesa (la parte de promesas está en la página "use y otras APIs").
+
+Con un contexto hace lo mismo que `useContext`, con una diferencia: **`use` se puede llamar dentro de un `if`, de un loop o después de un `return` temprano**. Es la única "hook-like" API que no sigue la regla del nivel superior. Lo que no puedes es llamarlo dentro de un `try/catch` ni fuera de un componente o hook.
+
+<Example title="leer el contexto solo si hace falta">
+
+```tsx
+function Greeting({ show }: { show: boolean }) {
+  if (!show) return <span>(oculto)</span>;
+  const user = use(UserContext); // ✓ con use; ✗ con useContext
+  return <span>Hola, {user?.name}</span>;
+}
+```
+
+<Live>
+  <ConditionalUse />
+</Live>
+
+</Example>
+
+<SayIt>
+  use is a React 19 API that reads a context or a promise. For context it behaves like useContext,
+  but it can be called conditionally, for example after an early return.
+</SayIt>
+
+## ¿Por qué Context provoca re-renders?
+
+Cuando el `value` de un Provider cambia (comparado con `Object.is`), React re-renderiza **todos los componentes que leen ese contexto**, aunque solo usen una parte del valor. Y **`memo` no lo evita**: memo compara props, y el contexto no es una prop.
+
+Dos causas típicas de renders de más:
+
+1. **Un `value` que es un objeto nuevo en cada render.** `value={{ theme, toggle }}` crea un objeto distinto cada vez que el Provider se renderiza, aunque `theme` no haya cambiado. Todos los consumidores se renderizan.
+2. **Un solo contexto con todo.** Un componente que solo usa `toggle` (que nunca cambia) se renderiza cada vez que cambia `theme`, porque está en el mismo objeto.
+
+<Example title="un contexto con todo: el botón se renderiza aunque solo usa toggle">
+
+```tsx
+function NaiveProvider({ children }) {
+  const [theme, setTheme] = useState<Theme>("dark");
+  const value = { theme, toggle: () => setTheme(/* … */) }; // objeto nuevo cada render
+  return <NaiveContext value={value}>{children}</NaiveContext>;
+}
+
+const NaiveButton = memo(function NaiveButton() {
+  const { toggle } = use(NaiveContext); // memo no ayuda: el contexto cambió
+  return <button onClick={toggle}>Cambiar tema</button>;
+});
+```
+
+<Live hint="cambia el tema y mira los dos contadores">
+  <NaiveContextDemo />
+</Live>
+
+</Example>
+
+## ¿Cómo evitar re-renders innecesarios con Context?
+
+De lo más simple a lo más elaborado:
+
+1. **Memoizar el `value`** con `useMemo` (y las funciones con `useCallback`), para que solo cambie cuando cambian los datos.
+2. **Separar contextos**: uno para el valor que cambia y otro para las acciones, que no cambian nunca. Los componentes que solo disparan acciones no se renderizan.
+3. **Separar por dominio**: un `AuthContext`, un `ThemeContext`, un `FeatureFlagsContext`, en vez de un `AppContext` gigante.
+4. **Poner el Provider lo más abajo posible** en el árbol, para que afecte a menos componentes.
+5. Si el valor cambia **muy seguido** (cada tecla, cada segundo) y lo leen muchos componentes, usar una librería con **selectores** (Zustand, Redux).
+
+<Example title="contexto de valor + contexto de acciones">
+
+```tsx
+const ThemeValueContext = createContext<Theme>("dark");
+const ThemeActionsContext = createContext<{ toggle: () => void } | null>(null);
+
+function ThemeProvider({ children }) {
+  const [theme, setTheme] = useState<Theme>("dark");
+  const actions = useMemo(() => ({ toggle: () => setTheme(/* … */) }), []); // nunca cambia
+  return (
+    <ThemeValueContext value={theme}>
+      <ThemeActionsContext value={actions}>{children}</ThemeActionsContext>
+    </ThemeValueContext>
+  );
+}
+```
+
+<Live hint="cambia el tema: ahora el botón no se renderiza">
+  <SplitContextDemo />
+</Live>
+
+</Example>
+
+<Pitfall title="Los hijos del Provider">
+  Fíjate que el Provider recibe `children`. Esos elementos los creó el componente de arriba, así que
+  cuando el Provider cambia su estado **no** se re-renderizan por ser hijos: solo los que leen el
+  contexto. Si en cambio escribieras los componentes directamente dentro del Provider (sin
+  `children`), se renderizarían todos.
+</Pitfall>
+
+<SayIt>
+  Every consumer re-renders when the provider value changes, and memo can't stop it. I memoize the
+  value, split rarely-changing actions from frequently-changing data into separate contexts, and
+  keep providers as low in the tree as possible. For state that changes often and is read in many
+  places, I use a store with selectors.
+</SayIt>
+
+## ¿Cuándo usar Context y cuándo Zustand o Redux?
+
+|                        | Context                                                                         | Zustand                                   | Redux Toolkit                                             |
+| ---------------------- | ------------------------------------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------- |
+| Qué es                 | Mecanismo de React para pasar datos                                             | Store pequeño con hooks                   | Store con reducers, acciones y middleware                 |
+| Re-renders             | Todos los consumidores del contexto                                             | Solo quien selecciona la parte que cambió | Igual que Zustand (`useSelector`)                         |
+| Boilerplate            | Poco                                                                            | Muy poco                                  | Más, pero muy estructurado                                |
+| DevTools / time travel | No                                                                              | Con middleware                            | Sí, de serie                                              |
+| Ideal para             | Datos que cambian poco: tema, usuario, idioma, flags, inyección de dependencias | Estado global de UI que cambia seguido    | Apps grandes con mucho estado compartido y muchos equipos |
+
+Y una pieza aparte: **los datos del servidor** (listas, detalles, paginación) no van en ninguno de estos. Van en **React Query / TanStack Query** (o SWR), que maneja caché, revalidación y estados de carga.
+
+<Tip title="Respuesta de entrevista">
+  Context es perfecto para valores que cambian poco y se leen en muchos lugares. Cuando el estado
+  cambia seguido y muchos componentes leen partes distintas, un store con selectores evita renders y
+  escala mejor. Por dentro, Zustand y Redux usan `useSyncExternalStore` (ver esa página).
+</Tip>
+
+<SayIt>
+  I use Context for low-frequency global values like the current user, theme or feature flags. For
+  client state that changes often and is read in many places I prefer Zustand, because components
+  subscribe to a slice and only re-render when that slice changes. Server data goes in React Query.
+</SayIt>

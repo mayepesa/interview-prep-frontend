@@ -6,11 +6,14 @@ const { promiseAll, promiseAllSettled } = (
   process.env.SOLUTIONS ? solution : starter
 ) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 const later = <T>(ms: number, value: T) => new Promise<T>((r) => setTimeout(() => r(value), ms));
 const failLater = (ms: number, message: string) =>
   new Promise<never>((_, reject) => setTimeout(() => reject(new Error(message)), ms));
 
-describe("02 · promiseAll", () => {
+suite("02 · promiseAll", () => {
   it("keeps the input order", async () => {
     await expect(promiseAll([later(30, "a"), later(10, "b"), "c"])).resolves.toEqual([
       "a",
@@ -34,7 +37,7 @@ describe("02 · promiseAll", () => {
   });
 });
 
-describe("02 · promiseAllSettled", () => {
+suite("02 · promiseAllSettled", () => {
   it("reports every result without rejecting", async () => {
     const results = await promiseAllSettled([later(10, 1), failLater(5, "x"), 3]);
     expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);

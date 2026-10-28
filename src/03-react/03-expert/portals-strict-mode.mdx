@@ -1,0 +1,129 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { BuildMode, PortalDemo, StrictModeDemo } from "./portals-strict-mode.examples";
+
+export const meta = {
+  title: "Portales y StrictMode",
+  section: "react-expert",
+  order: 20,
+  summary:
+    "Cómo renderizar fuera del contenedor con createPortal (modales, tooltips) y qué comprueba StrictMode en desarrollo, incluido por qué renderiza y ejecuta efectos dos veces.",
+};
+
+## ¿Qué es un portal?
+
+Normalmente un componente se renderiza **dentro** del nodo del DOM de su padre. `createPortal(children, domNode)` renderiza `children` en **otro nodo del DOM** (casi siempre `document.body`), aunque en el árbol de React siga siendo hijo del mismo componente.
+
+¿Para qué? Para elementos que tienen que "escaparse" visualmente de su contenedor:
+
+- **modales y diálogos**,
+- tooltips, popovers y menús desplegables,
+- toasts / notificaciones.
+
+Si un modal se renderiza dentro de una tarjeta con `overflow: hidden`, o dentro de un elemento con `transform` o un `z-index` bajo (que crean un _stacking context_), el modal queda **cortado** o **debajo** de otras cosas. En `document.body` esos problemas desaparecen.
+
+<Example title="el mismo modal sin portal y con portal">
+
+```tsx
+function Modal({ onClose, children }) {
+  return createPortal(
+    <div className="backdrop" onClick={onClose}>
+      <div role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>,
+    document.body, // dónde se monta en el DOM
+  );
+}
+```
+
+<Live hint="sin portal: el overflow del contenedor corta el modal">
+  <PortalDemo usePortal={false} />
+</Live>
+
+<Live hint="con portal: se ve completo. Haz clic dentro del modal y mira el contador">
+  <PortalDemo usePortal />
+</Live>
+
+</Example>
+
+<SayIt>
+  A portal renders children into a different DOM node, usually document.body, while they stay in the
+  same place in the React tree. I use it for modals, tooltips and menus so they aren't clipped by
+  overflow hidden or trapped under a stacking context.
+</SayIt>
+
+## ¿Cómo se comportan los eventos y el contexto en un portal?
+
+Lo importante en una entrevista: **el portal cambia la posición en el DOM, no en el árbol de React.** Por eso:
+
+- **Los eventos burbujean por el árbol de React**, no por el del DOM. Un clic dentro del modal llega al `onClick` del contenedor que lo renderizó, aunque en el DOM el modal esté en `body`. En el ejemplo, el contador sube al hacer clic en el modal.
+- **El contexto funciona**: el modal lee los Providers de sus ancestros de React (tema, usuario, i18n).
+- El estado y el ciclo de vida son los del componente que lo renderiza.
+
+Si no quieres que un clic dentro del modal dispare handlers de los ancestros, usa `e.stopPropagation()`.
+
+<Tip title="Accesibilidad en un modal">
+  Un portal resuelve el posicionamiento, no la accesibilidad. Un modal accesible además: tiene `role="dialog"`
+  y `aria-modal="true"`, mueve el foco adentro al abrir y lo **devuelve** al cerrar, se cierra con Escape,
+  atrapa el foco con Tab y bloquea el scroll del fondo. Hoy el elemento nativo `<dialog>` con `showModal()`
+  resuelve gran parte de esto (y su *top layer* evita también los problemas de z-index).
+</Tip>
+
+<SayIt>
+  A portal only changes where the DOM nodes live. Events still bubble through the React tree, so a
+  click inside a portaled modal reaches its React parents, and context works normally.
+</SayIt>
+
+## ¿Qué es StrictMode?
+
+`<StrictMode>` es un componente que **no renderiza nada visible**: activa comprobaciones extra **solo en desarrollo** para el subárbol que envuelve. En producción no hace nada y no cuesta nada.
+
+Qué comprueba:
+
+1. **Renderiza cada componente dos veces** para detectar renders impuros.
+2. **Monta, desmonta y vuelve a montar** cada componente (setup → cleanup → setup de todos los efectos) para detectar efectos sin cleanup.
+3. **Llama dos veces a los callback refs** (setup → cleanup → setup) por la misma razón (React 19).
+4. Avisa del uso de **APIs obsoletas** (por ejemplo, métodos de ciclo de vida `UNSAFE_` en clases).
+
+Se suele poner en la raíz: `createRoot(el).render(<StrictMode><App /></StrictMode>)`. Vite y Next.js lo traen activado en sus plantillas.
+
+## ¿Por qué StrictMode renderiza dos veces?
+
+Porque React **necesita** que tus componentes y efectos sean resistentes a eso en la vida real:
+
+- **Render doble → pureza.** Concurrent React puede empezar un render, descartarlo y repetirlo. Si tu render tiene efectos colaterales (mutar una variable de fuera, hacer un `push` a un array compartido, una petición), renderizar dos veces lo hace **visible** en desarrollo: por ejemplo, un elemento duplicado. Un componente puro da el mismo resultado las dos veces.
+- **Efecto doble → cleanup.** En producción un componente se puede desmontar y volver a montar: al navegar y volver, con `<Activity>` (que oculta y restaura partes de la UI conservando el estado), o con Fast Refresh. Si tu efecto se suscribe pero no se desuscribe, al montar dos veces tendrás **dos suscripciones**. StrictMode simula ese ciclo para que el bug aparezca enseguida.
+
+<Example title="un efecto con y sin StrictMode">
+
+```tsx
+useEffect(() => {
+  log("efecto (setup)");
+  return () => log("cleanup");
+}, []);
+```
+
+<Live hint="con StrictMode verás setup → cleanup → setup (solo en desarrollo)">
+  <StrictModeDemo />
+  <BuildMode />
+</Live>
+
+</Example>
+
+<Pitfall title="No lo 'arregles' quitando StrictMode">
+  Si ves dos peticiones o dos conexiones en desarrollo, el problema no es StrictMode: es que el
+  efecto no tiene cleanup (cancela la petición con `AbortController`, cierra la conexión). Evitarlo
+  con un `useRef` `hasRun` tapa el síntoma y deja el bug para producción.
+</Pitfall>
+
+<Tip title="Los logs dobles">
+  Los `console.log` del segundo render salen atenuados (en gris) para que sepas cuáles son del
+  render "de prueba", y React DevTools tiene una opción para ocultarlos.
+</Tip>
+
+<SayIt>
+  StrictMode is a development-only tool. It renders components twice to expose impure rendering, and
+  it mounts, unmounts and remounts them to make sure effects clean up properly. In production it
+  does nothing, so if something breaks with StrictMode, the fix is in my component, usually a
+  missing cleanup.
+</SayIt>

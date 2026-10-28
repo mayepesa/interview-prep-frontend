@@ -4,9 +4,12 @@ import * as starter from "./starter";
 
 const { Emitter } = (process.env.SOLUTIONS ? solution : starter) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 type TimerEvents = { start: { project: string }; stop: { seconds: number }; reset: undefined };
 
-describe("05 · typed emitter", () => {
+suite("05 · typed emitter", () => {
   it("calls handlers in order with the payload", () => {
     const emitter = new Emitter<TimerEvents>();
     const calls: string[] = [];

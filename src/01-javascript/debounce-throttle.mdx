@@ -1,0 +1,333 @@
+import { Example, Live, Run, SayIt, Pitfall, Tip, Compare, Bad, Good } from "../app/study";
+import { debounce, throttle } from "./debounce-throttle";
+import {
+  MouseMoveCounter,
+  KeystrokeSearch,
+  DebouncedValueSearch,
+} from "./debounce-throttle.examples";
+
+export const meta = {
+  title: "Debounce y throttle",
+  section: "javascript",
+  order: 40,
+  summary:
+    "Qué problema resuelven, cómo implementarlos desde cero paso a paso (pregunta clásica de live coding), cuándo usar cada uno y cómo usarlos bien en React.",
+};
+
+## ¿Qué problema resuelven debounce y throttle?
+
+Algunos eventos del navegador se disparan **muchísimas veces por segundo**: `mousemove`, `scroll`, `resize`, `input` mientras alguien escribe rápido. Si cada evento hace trabajo caro (una petición HTTP, recalcular un layout, re-renderizar una lista grande, mandar analytics), la página se vuelve lenta y el servidor recibe tráfico inútil.
+
+Las dos técnicas **limitan cuántas veces se ejecuta una función**, pero de forma distinta:
+
+- **Debounce** ("anti-rebote"): espera a que los eventos **dejen de llegar** durante X ms y entonces ejecuta **una vez**, con los últimos argumentos. Si llega otro evento antes, el temporizador se reinicia.
+- **Throttle** ("estrangular"): ejecuta **como máximo una vez cada** X ms mientras los eventos siguen llegando. Garantiza un ritmo constante.
+
+Una analogía: debounce es un ascensor que espera a que nadie más entre durante unos segundos para cerrar la puerta. Throttle es un colectivo que sale cada 10 minutos, haya o no gente esperando.
+
+<Example title="los mismos eventos, tres comportamientos">
+
+```ts
+const onMove = () => {
+  setRaw((n) => n + 1); // cada evento
+  throttled(); // máx. 1 cada 300 ms
+  debounced(); // 1 vez cuando paras 300 ms
+};
+```
+
+<Live hint="mueve el mouse sin parar un par de segundos y luego quédate quieto">
+  <MouseMoveCounter />
+</Live>
+
+</Example>
+
+Mientras mueves el mouse, el contador de throttle sube a ritmo fijo (unas 3 veces por segundo) y el de debounce **no se mueve**. Cuando te detienes, debounce suma 1.
+
+<SayIt>
+  Both limit how often a function runs during high-frequency events. Debounce waits until the events
+  stop for a given time and then runs once. Throttle runs at most once per interval while the events
+  keep coming.
+</SayIt>
+
+## ¿Cómo implementas debounce? Paso a paso
+
+Es una pregunta muy común de live coding. La idea se construye en cuatro pasos:
+
+1. `debounce(fn, wait)` **devuelve una función nueva** que reemplaza a `fn`.
+2. Esa función guarda un `timer` en un **closure** (una variable que sobrevive entre llamadas).
+3. En cada llamada: **cancela** el timer anterior con `clearTimeout` y **programa** uno nuevo con `setTimeout(…, wait)`.
+4. Cuando por fin pasan `wait` ms sin llamadas, el último timer se dispara y ejecuta `fn` con los **últimos argumentos**.
+
+Extras que conviene mencionar:
+
+- Un método **`cancel()`** para descartar la ejecución pendiente (por ejemplo, al desmontar un componente).
+- Reenviar `this` y los argumentos con `fn.apply(this, args)` si se va a usar como método. La versión con arrow functions de abajo no lo hace porque en React no hace falta.
+- Variante **leading**: ejecutar en la **primera** llamada y luego ignorar hasta que haya silencio (útil para evitar doble click en "Guardar").
+
+<Example title="debounce (en debounce-throttle.ts, con tests)">
+
+```ts
+export function debounce<Args extends unknown[]>(fn: (...args: Args) => void, wait: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined; // 2. vive en el closure
+
+  const debounced = (...args: Args) => {
+    clearTimeout(timer); // 3. cancela el anterior
+    timer = setTimeout(() => fn(...args), wait); // 3. programa uno nuevo
+  };
+
+  debounced.cancel = () => clearTimeout(timer);
+  return debounced; // 1. una función nueva
+}
+```
+
+<Run
+  run={async (log) => {
+    const t0 = performance.now();
+    const at = () => `${Math.round((performance.now() - t0) / 50) * 50} ms`;
+    const search = debounce((q) => log(`→ búsqueda de "${q}" a los ${at()}`), 300);
+    const typed = ["t", "ti", "tim", "time"];
+    for (const q of typed) {
+      log(`tecla "${q}" a los ${at()}`);
+      search(q);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await new Promise((r) => setTimeout(r, 400));
+    log("4 teclas → 1 búsqueda, con el último valor");
+    search("cancelada");
+    search.cancel();
+    await new Promise((r) => setTimeout(r, 400));
+    log("después de cancel(): no se ejecutó nada");
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Debounce returns a new function that keeps a timer in a closure. Every call clears the previous
+  timer and starts a new one, so the original function only runs once the calls stop for the wait
+  time, with the latest arguments. I'd also expose a cancel method for cleanup.
+</SayIt>
+
+## ¿Cómo implementas throttle? Paso a paso
+
+Throttle es un poco más difícil porque hay que decidir qué pasa con las llamadas que llegan **durante** el intervalo. La versión más útil es **leading + trailing**:
+
+1. Guarda en el closure **cuándo fue la última ejecución** (`last`).
+2. En cada llamada calcula cuánto falta para que termine el intervalo: `remaining = wait - (now - last)`.
+3. Si ya pasó el intervalo (`remaining <= 0`): ejecuta **ahora** (_leading_) y actualiza `last`.
+4. Si no: guarda los argumentos de esta llamada y, si no hay uno programado, programa una ejecución para cuando termine el intervalo (_trailing_). Así **la última llamada nunca se pierde**: importante si el último evento de scroll decide qué se muestra.
+
+La versión más simple que se suele escribir primero (solo _leading_, con un flag) es válida para empezar, pero pierde el último evento:
+
+```ts
+function throttleSimple(fn, wait) {
+  let waiting = false;
+  return (...args) => {
+    if (waiting) return; // ignora todo durante el intervalo
+    fn(...args);
+    waiting = true;
+    setTimeout(() => (waiting = false), wait);
+  };
+}
+```
+
+<Example title="throttle con leading y trailing (en debounce-throttle.ts, con tests)">
+
+```ts
+export function throttle<Args extends unknown[]>(fn: (...args: Args) => void, wait: number) {
+  let last = 0;
+  let trailing: ReturnType<typeof setTimeout> | undefined;
+  let pendingArgs: Args | null = null;
+
+  return (...args: Args) => {
+    const now = Date.now();
+    const remaining = wait - (now - last);
+
+    if (remaining <= 0) {
+      // pasó el intervalo: ejecuta ya (leading)
+      clearTimeout(trailing);
+      trailing = undefined;
+      last = now;
+      fn(...args);
+      return;
+    }
+
+    pendingArgs = args; // guarda la última llamada
+    trailing ??= setTimeout(() => {
+      // y la ejecuta al final del intervalo (trailing)
+      last = Date.now();
+      trailing = undefined;
+      if (pendingArgs) fn(...pendingArgs);
+      pendingArgs = null;
+    }, remaining);
+  };
+}
+```
+
+<Run
+  run={async (log) => {
+    const t0 = performance.now();
+    const at = () => `${Math.round((performance.now() - t0) / 50) * 50} ms`;
+    const onScroll = throttle((y) => log(`→ ejecuta con scrollY=${y} a los ${at()}`), 200);
+    for (let i = 1; i <= 12; i++) {
+      onScroll(i * 100);
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    log(`12 eventos en ${at()}; el último fue scrollY=1200`);
+    await new Promise((r) => setTimeout(r, 300));
+  }}
+/>
+
+</Example>
+
+Fíjate en la salida: se ejecuta al instante con el primer evento, luego como mucho una vez cada 200 ms, y la última ejecución usa `scrollY=1200`, el valor final.
+
+<SayIt>
+  Throttle remembers when it last ran. If the interval has passed it runs immediately; otherwise it
+  stores the latest arguments and schedules a trailing call for the end of the interval, so the
+  final event is never lost.
+</SayIt>
+
+## ¿Cuándo uso debounce y cuándo throttle?
+
+La pregunta clave: **¿me importa el resultado final o necesito ir respondiendo mientras pasa?**
+
+| Caso                                                       | Técnica                                    | Por qué                                  |
+| ---------------------------------------------------------- | ------------------------------------------ | ---------------------------------------- |
+| Buscador / autocompletado                                  | debounce (250–400 ms)                      | solo importa lo que quedó escrito        |
+| Autoguardado de un formulario                              | debounce (~1 s)                            | guardar cuando el usuario hace una pausa |
+| Validar un campo contra el servidor (¿el usuario existe?)  | debounce                                   |                                          |
+| `resize` para recalcular un layout caro                    | debounce                                   | solo importa el tamaño final             |
+| Scroll infinito, "volver arriba", progreso de lectura      | throttle (100–200 ms)                      | hay que reaccionar mientras se scrollea  |
+| `mousemove` para arrastrar o un tooltip que sigue al mouse | throttle o `requestAnimationFrame`         | feedback continuo                        |
+| Analytics de eventos frecuentes                            | throttle                                   | muestreo a ritmo fijo                    |
+| Evitar doble click en "Pagar"                              | debounce _leading_ o deshabilitar el botón |                                          |
+
+Para animaciones que siguen al mouse o al scroll, una alternativa es sincronizar con **`requestAnimationFrame`** (una vez por frame, ~60 por segundo), que es el ritmo natural del pintado. Y para scroll infinito o lazy loading, **`IntersectionObserver`** suele ser mejor que escuchar `scroll`.
+
+<Example title="un buscador: una petición por tecla vs con debounce">
+
+<Compare>
+<Bad>
+
+```tsx
+<input
+  onChange={(e) => {
+    setQuery(e.target.value);
+    search(e.target.value); // una petición por tecla
+  }}
+/>
+```
+
+</Bad>
+<Good>
+
+```tsx
+const search = useMemo(() => debounce(run, 400), []);
+useEffect(() => () => search.cancel(), [search]);
+
+<input
+  onChange={(e) => {
+    setQuery(e.target.value);
+    search(e.target.value); // una petición al hacer pausa
+  }}
+/>;
+```
+
+</Good>
+</Compare>
+
+<Live hint="escribe 'planner' rápido en cada uno y compara las peticiones">
+  <p>Sin debounce:</p>
+  <KeystrokeSearch debounced={false} />
+  <p>Con debounce de 400 ms:</p>
+  <KeystrokeSearch debounced />
+</Live>
+
+</Example>
+
+<SayIt>
+  I ask whether only the final value matters or whether I need updates while it's happening. Search
+  inputs, autosave and resize get debounce; scroll and mousemove handlers get throttle, or
+  requestAnimationFrame for visual updates. For infinite scroll I'd rather use an
+  IntersectionObserver.
+</SayIt>
+
+## Debounce en React sin errores
+
+En React hay una trampa: el cuerpo del componente se ejecuta en **cada render**. Si escribes `const search = debounce(run, 400)` directamente, cada render crea **un debounce nuevo con su propio timer**, y el debounce deja de funcionar (cada tecla provoca un render, y cada render olvida el timer anterior).
+
+Dos formas correctas:
+
+1. **Debounce de la función**: crearla una sola vez con `useMemo` (o `useRef`) y cancelarla en el cleanup de un efecto para que no se ejecute después de desmontar.
+2. **Debounce del valor** (lo más común e idiomático): guardar lo que escribe el usuario en estado normal (el input responde al instante) y derivar un valor "retrasado" con un hook `useDebouncedValue`. El efecto que pide datos depende del valor retrasado, y además usa `AbortController` para cancelar respuestas viejas.
+
+No confundas con **`useDeferredValue`** de React: no espera un tiempo fijo ni reduce peticiones; solo le dice a React que el render con el valor nuevo puede posponerse para que la UI siga respondiendo. Para limitar peticiones al servidor sigues necesitando debounce.
+
+<Example title="useDebouncedValue (en src/03-react/hooks) + AbortController">
+
+<Compare>
+<Bad>
+
+```tsx
+function Search() {
+  const [query, setQuery] = useState("");
+  // ✗ un debounce nuevo en cada render: no debouncea nada
+  const search = debounce(fetchResults, 400);
+  return (
+    <input
+      onChange={(e) => {
+        setQuery(e.target.value);
+        search(e.target.value);
+      }}
+    />
+  );
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function useDebouncedValue<T>(value: T, delayMs = 300): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer); // cada cambio cancela el anterior
+  }, [value, delayMs]);
+  return debounced;
+}
+
+function Search() {
+  const [query, setQuery] = useState("");
+  const debouncedQuery = useDebouncedValue(query, 400);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    searchProjects(debouncedQuery, { signal: controller.signal }).then(setResults);
+    return () => controller.abort();
+  }, [debouncedQuery]);
+  // …
+}
+```
+
+</Good>
+</Compare>
+
+<Live hint="escribe rápido: el valor buscado se actualiza cuando haces una pausa">
+  <DebouncedValueSearch />
+</Live>
+
+</Example>
+
+<Pitfall title="Un debounce que se recrea en cada render">
+  Si el debounce depende de props o estado y lo pones en `useMemo` con esas dependencias, se recrea
+  cada vez que cambian y pierde el timer. Mantén la función estable y lee los valores actuales con
+  un `ref`, o usa el patrón de debounce del valor.
+</Pitfall>
+
+<SayIt>
+  In React I never create a debounced function directly in the component body, because every render
+  would make a new one with a new timer. I either memoize it and cancel it on unmount, or more often
+  debounce the value with a useDebouncedValue hook and fetch in an effect with an AbortController.
+</SayIt>

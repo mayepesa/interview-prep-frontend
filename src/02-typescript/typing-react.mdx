@@ -1,0 +1,491 @@
+import { Example, Live, SayIt, Pitfall, Tip, Compare, Bad, Good } from "../app/study";
+import {
+  ProjectCardDemo,
+  CardDemo,
+  TypedForm,
+  HooksDemo,
+  ButtonDemo,
+  SelectDemo,
+  ActionDemo,
+  ThemeDemo,
+  ThemeWithoutProvider,
+  ToggleDemo,
+} from "./typing-react.examples";
+
+export const meta = {
+  title: "Tipar React",
+  section: "typescript",
+  order: 30,
+  summary:
+    "Cómo tipar props, children, eventos, hooks (useState, useRef, useReducer), componentes que extienden elementos nativos, componentes genéricos, props discriminadas, context y custom hooks. Todo con React 19.",
+};
+
+## ¿Cómo se tipan las props?
+
+Las props son un **objeto**, así que se tipan con un `type` (o `interface`) y se **desestructuran** en los parámetros:
+
+- Las opcionales llevan `?` y se les da **valor por defecto** en la desestructuración (`status = "active"`). Ya no se usa `defaultProps` en componentes de función (React 19 lo eliminó para ellos).
+- Los callbacks se tipan como funciones: `onOpen: (name: string) => void`. Convención: props de eventos con prefijo `on…`, y los handlers internos con `handle…`.
+- **No hace falta `React.FC`**. Antes agregaba `children` implícitos (ya no) y complica los genéricos. Una función normal con props tipadas es lo estándar.
+- El tipo de retorno se infiere; no hace falta anotarlo.
+
+<Example title="un componente con props obligatorias, opcionales y un callback">
+
+```tsx
+type ProjectCardProps = {
+  name: string;
+  hours: number;
+  status?: "active" | "archived";
+  onOpen: (name: string) => void;
+};
+
+export function ProjectCard({ name, hours, status = "active", onOpen }: ProjectCardProps) {
+  return (
+    <div>
+      <strong>{name}</strong> · {hours} h · <em>{status}</em>
+      <button onClick={() => onOpen(name)}>Abrir</button>
+    </div>
+  );
+}
+
+<ProjectCard name="Planner" hours={12} onOpen={setOpened} />
+<ProjectCard name="Planner" hours="12" onOpen={setOpened} />
+//                          ~~~~~ Error: Type 'string' is not assignable to type 'number'.
+<ProjectCard name="Planner" hours={12} />
+// Error: Property 'onOpen' is missing in type … but required in type 'ProjectCardProps'.
+```
+
+<Live hint="abre cada tarjeta">
+  <ProjectCardDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  I type props with a type alias and destructure them in the parameters, giving optional props a
+  default value right there. I don't use React.FC; a plain function with typed props is simpler and
+  works better with generics.
+</SayIt>
+
+## children y ReactNode
+
+**`ReactNode`** es el tipo de "cualquier cosa que React puede renderizar": elementos JSX, strings, números, `null`, `undefined`, booleanos, arrays de todo eso y (en React 19) promesas. Es el tipo correcto para `children` y para cualquier prop que reciba contenido (`actions`, `icon`, `footer`).
+
+Los otros tipos que aparecen y en qué se diferencian:
+
+| Tipo                   | Acepta                            | Cuándo                                          |
+| ---------------------- | --------------------------------- | ----------------------------------------------- |
+| `ReactNode`            | todo lo renderizable              | `children` y props de contenido: **el default** |
+| `ReactElement`         | solo un elemento JSX (`<X />`)    | cuando vas a clonar o inspeccionar el elemento  |
+| `React.JSX.Element`    | lo que devuelve una expresión JSX | casi nunca se escribe a mano                    |
+| `PropsWithChildren<P>` | `P & { children?: ReactNode }`    | atajo, si `children` es opcional                |
+
+En React 19 el namespace global `JSX` ya no existe en los tipos: se escribe `React.JSX.Element`.
+
+<Example title="un Card con children y una prop de contenido">
+
+```tsx
+import type { ReactNode } from "react";
+
+type CardProps = {
+  title: string;
+  actions?: ReactNode; // cualquier cosa renderizable, opcional
+  children: ReactNode; // obligatorio
+};
+
+export function Card({ title, actions, children }: CardProps) {
+  return (
+    <section>
+      <header>
+        <h3>{title}</h3>
+        {actions}
+      </header>
+      {children}
+    </section>
+  );
+}
+
+<Card title="Horas" actions={<button>Exportar</button>}>
+  <p>texto, números, elementos, null, false, arrays…</p>
+</Card>;
+```
+
+<Live>
+  <CardDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  I type children and any content prop as ReactNode, which covers everything React can render:
+  elements, strings, numbers, null and arrays. ReactElement is narrower, only a JSX element, and I
+  use it only when I need to inspect or clone the element.
+</SayIt>
+
+## ¿Cómo se tipan los eventos?
+
+React tiene sus propios tipos de eventos (eventos sintéticos), genéricos sobre el **elemento**:
+
+| Evento                 | Tipo                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `onChange` de un input | `ChangeEvent<HTMLInputElement>` (o `HTMLSelectElement`, `HTMLTextAreaElement`) |
+| `onSubmit` de un form  | `FormEvent<HTMLFormElement>`                                                   |
+| `onClick`              | `MouseEvent<HTMLButtonElement>`                                                |
+| `onKeyDown`            | `KeyboardEvent<HTMLInputElement>`                                              |
+| `onFocus` / `onBlur`   | `FocusEvent<HTMLInputElement>`                                                 |
+
+Reglas prácticas:
+
+- Si escribes el handler **inline** (`onChange={(e) => …}`), **no anotes nada**: TypeScript infiere el evento del contexto.
+- Si lo extraes a una función, anótalo con el tipo de arriba, o tipa la función completa: `const onChange: ChangeEventHandler<HTMLInputElement> = (e) => …`.
+- Importa los tipos de `react` (`import type { ChangeEvent } from "react"`), no uses los del DOM (`Event`, `MouseEvent` globales), que son otros.
+- **`e.currentTarget`** es el elemento que tiene el handler y está **bien tipado**. `e.target` es donde ocurrió el evento (puede ser un hijo) y es más genérico. En un `onSubmit`, `new FormData(e.currentTarget)` es el patrón correcto.
+
+<Example title="un formulario con eventos tipados">
+
+```tsx
+import type { ChangeEvent, FormEvent, KeyboardEvent } from "react";
+
+const onNameChange = (e: ChangeEvent<HTMLInputElement>) => setName(e.target.value);
+
+const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+  if (e.key === "Escape") setName("");
+};
+
+const onSubmit = (e: FormEvent<HTMLFormElement>) => {
+  e.preventDefault();
+  const data = new FormData(e.currentTarget); // currentTarget: HTMLFormElement
+  save(String(data.get("name")));
+};
+
+<input
+  type="number"
+  onChange={(e) => setHours(e.target.valueAsNumber)} // inline: e se infiere solo
+/>;
+```
+
+<Live hint="escribe, presiona Esc, cambia las horas y envía">
+  <TypedForm />
+</Live>
+
+</Example>
+
+<SayIt>
+  React events are typed with generics over the element, like ChangeEvent of HTMLInputElement or
+  FormEvent of HTMLFormElement. For inline handlers I don't annotate anything because the type is
+  inferred from context. I use currentTarget when I need the element with the handler, since it's
+  properly typed.
+</SayIt>
+
+## useState, useRef y useReducer
+
+**`useState`** infiere el tipo del valor inicial. Hace falta el genérico solo cuando el inicial **no representa todos los valores posibles**:
+
+- `useState(0)` → `number`. No hace falta nada.
+- `useState<User | null>(null)` → sin el genérico, el tipo sería `null` para siempre.
+- `useState<string[]>([])` → sin el genérico, `[]` se infiere como `never[]`.
+- `useState<Status>("idle")` → para no ensanchar a `string`.
+
+**`useRef`** tiene dos usos y se tipan distinto:
+
+- **Ref a un elemento del DOM**: `useRef<HTMLInputElement>(null)`. En React 19, `ref.current` es `HTMLInputElement | null` (React lo llena al montar), así que usas `ref.current?.focus()`.
+- **Ref a un valor mutable** (un id de timer, un contador que no debe re-renderizar): `useRef(0)` → `current: number`. React 19 exige pasar **siempre** un valor inicial.
+
+**`useReducer`** se tipa a través del **reducer**: estado y acciones como **uniones discriminadas**. Así `dispatch` solo acepta acciones válidas, y en cada `case` TypeScript sabe qué campos tiene la acción.
+
+<Example title="los tres hooks tipados">
+
+```tsx
+const [user, setUser] = useState<User | null>(null);
+const [tags, setTags] = useState<string[]>([]);
+const inputRef = useRef<HTMLInputElement>(null); // RefObject<HTMLInputElement | null>
+const clicks = useRef(0); // RefObject<number>
+
+type TimerState =
+  | { status: "idle" }
+  | { status: "running"; startedAt: number }
+  | { status: "stopped"; seconds: number };
+type TimerAction =
+  { type: "start"; now: number } | { type: "stop"; now: number } | { type: "reset" };
+
+function timerReducer(state: TimerState, action: TimerAction): TimerState {
+  switch (action.type) {
+    case "start":
+      return { status: "running", startedAt: action.now }; // action.now existe aquí
+    case "stop":
+      return state.status === "running"
+        ? { status: "stopped", seconds: (action.now - state.startedAt) / 1000 }
+        : state;
+    case "reset":
+      return { status: "idle" };
+  }
+}
+
+const [timer, dispatch] = useReducer(timerReducer, { status: "idle" });
+dispatch({ type: "start" });
+// Error: Argument of type '{ type: "start"; }' is not assignable to parameter of type 'TimerAction'.
+```
+
+<Live hint="inicia sesión, da foco al input y usa el cronómetro">
+  <HooksDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  useState infers from the initial value, so I only pass a generic when the initial value doesn't
+  cover every case, like null or an empty array. A DOM ref is useRef of the element type with null,
+  and I access it with optional chaining. For useReducer I type state and actions as discriminated
+  unions, so dispatch only accepts valid actions.
+</SayIt>
+
+## Extender las props de un elemento nativo
+
+Cuando haces un componente que envuelve un elemento HTML (un `Button`, un `Input`), quieres que acepte **todas** sus props nativas (`onClick`, `disabled`, `type`, `aria-*`, `data-*`…) sin escribirlas una por una. Para eso:
+
+- **`ComponentPropsWithoutRef<"button">`**: todas las props de un `<button>`, sin `ref`.
+- **`ComponentPropsWithRef<"button">`**: incluyendo `ref`. En **React 19, `ref` es una prop normal** en componentes de función: ya no hace falta `forwardRef`.
+- `ComponentProps<typeof MiComponente>`: las props de otro componente.
+
+Se combinan con una intersección para agregar las tuyas, y con **rest/spread** se pasan las nativas al elemento. Si una prop propia choca con una nativa, usa `Omit<…, "nombre">` antes de intersectar.
+
+<Example title="Button con todas las props de button (en react-types.tsx, con tests)">
+
+```tsx
+import type { ComponentPropsWithoutRef } from "react";
+
+type ButtonProps = ComponentPropsWithoutRef<"button"> & { variant?: "primary" | "ghost" };
+
+export function Button({ variant = "ghost", className, ...rest }: ButtonProps) {
+  return <button type="button" className={`${variant} ${className ?? ""}`} {...rest} />;
+}
+
+<Button variant="primary" onClick={save} aria-label="guardar" disabled={saving} />;
+
+// React 19: ref como prop, sin forwardRef
+type InputProps = ComponentPropsWithRef<"input"> & { label: string };
+function Input({ label, ref, ...rest }: InputProps) {
+  return (
+    <label>
+      {label}
+      <input ref={ref} {...rest} />
+    </label>
+  );
+}
+```
+
+<Live>
+  <ButtonDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  To wrap a native element I intersect my props with ComponentPropsWithoutRef of that element and
+  spread the rest onto it, so it accepts onClick, disabled and aria attributes for free. In React 19
+  ref is a regular prop, so I don't need forwardRef anymore.
+</SayIt>
+
+## Componentes genéricos
+
+Un componente también puede ser **genérico**: `function Select<T>(props: SelectProps<T>)`. Sirve cuando el componente trabaja con datos de **cualquier forma** y quieres que las props estén **conectadas** entre sí: las `options` son `T[]`, el `value` es `T` y `onChange` recibe un `T`. Así, si pasas proyectos, `onChange` te devuelve un **proyecto completo**, no un string ni un `any`.
+
+Casos típicos: `Select`, `Table<Row>`, `List<Item>`, `Autocomplete<Option>`. El tipo se **infiere** de las props al usarlo; no hace falta escribir `<Select<Project> …>`.
+
+Detalle de sintaxis: en un archivo `.tsx`, una arrow function genérica se escribe `<T,>(props: Props<T>) => …` (con coma) para que no se confunda con una etiqueta JSX. Con `function` no hay problema.
+
+<Example title="Select genérico (en react-types.tsx, con tests)">
+
+```tsx
+type SelectProps<T> = {
+  options: readonly T[];
+  value: T;
+  onChange: (value: T) => void;
+  getLabel: (option: T) => string;
+};
+
+export function Select<T>({ options, value, onChange, getLabel }: SelectProps<T>) {
+  return (
+    <select
+      value={options.indexOf(value)}
+      onChange={(e) => {
+        const next = options[Number(e.target.value)];
+        if (next !== undefined) onChange(next);
+      }}
+    >
+      {options.map((option, i) => (
+        <option key={getLabel(option)} value={i}>
+          {getLabel(option)}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+<Select
+  options={projects} // T = Project (inferido)
+  value={project}
+  onChange={setProject} // (value: Project) => void
+  getLabel={(p) => p.name} // p: Project
+/>;
+```
+
+<Live hint="elige un proyecto: onChange recibe el objeto entero">
+  <SelectDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  A generic component like a Select of T connects its props: options are T, value is T and onChange
+  receives a T, so with projects I get the whole project back, fully typed. TypeScript infers T from
+  the props, so callers don't have to write it.
+</SayIt>
+
+## Props discriminadas: props que dependen entre sí
+
+A veces una prop decide qué **otras** props son válidas: si es un link necesita `href`; si es un botón necesita `onClick`. Con props opcionales (`href?`, `onClick?`) se permiten combinaciones inválidas (un link sin `href`, o con los dos).
+
+La solución es una **unión discriminada de props**: cada variante tiene su discriminante (`as: "link"`) y **solo** sus props. TypeScript rechaza las combinaciones inválidas en el JSX y, dentro del componente, angosta el tipo al revisar el discriminante.
+
+Detalle: no desestructures todas las props en la firma (`function Action({ as, href, onClick })`): `href` no existe en la variante de botón ni `onClick` en la de link, así que no compila. Recibe `props`, revisa `props.as` y después usa `props.href`.
+
+<Example title="Action: link o botón (en react-types.tsx, con tests)">
+
+```tsx
+type ActionProps =
+  | { as: "link"; href: string; children: ReactNode }
+  | { as: "button"; onClick: () => void; children: ReactNode };
+
+export function Action(props: ActionProps) {
+  return props.as === "link" ? (
+    <a href={props.href}>{props.children}</a>         // props: variante link
+  ) : (
+    <button type="button" onClick={props.onClick}>{props.children}</button>
+  );
+}
+
+<Action as="link" href="/docs">Docs</Action>   // ok
+<Action as="link">Sin href</Action>
+// Error: Type '{ as: "link"; children: string; }' is not assignable to type 'ActionProps'.
+<Action as="button" href="/x" onClick={go}>X</Action>
+// Error: Type '{ as: "button"; href: string; … }' is not assignable to type 'ActionProps'.
+```
+
+<Live>
+  <ActionDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  When one prop determines which others are valid, I model the props as a discriminated union, like
+  a link that requires href or a button that requires onClick. Invalid combinations don't compile,
+  and inside the component checking the discriminant narrows the props.
+</SayIt>
+
+## ¿Cómo se tipa un Context?
+
+`createContext` necesita un valor por defecto, que se usa cuando un componente lee el contexto **sin un Provider arriba**. El patrón recomendado:
+
+1. Tipar el contexto como `createContext<Valor | null>(null)`. No inventes un valor por defecto falso (`{} as Valor`): oculta el error de olvidar el Provider.
+2. Exponer un **hook propio** (`useTheme`) que lee el contexto, **lanza un error claro** si es `null`, y devuelve el tipo **sin** `null`. Así los componentes no tienen que revisar `null` cada vez.
+3. En React 19 puedes renderizar `<ThemeContext value={…}>` directamente (sin `.Provider`) y leer con `use(ThemeContext)` o `useContext`.
+
+<Example title="ThemeContext con su hook">
+
+```tsx
+type ThemeContextValue = { theme: "light" | "dark"; toggle: () => void };
+
+const ThemeContext = createContext<ThemeContextValue | null>(null);
+
+export function ThemeProvider({ children }: { children: ReactNode }) {
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const toggle = () => setTheme((t) => (t === "light" ? "dark" : "light"));
+  return <ThemeContext value={{ theme, toggle }}>{children}</ThemeContext>;
+}
+
+export function useTheme(): ThemeContextValue {
+  const value = use(ThemeContext);
+  if (!value) throw new Error("useTheme debe usarse dentro de <ThemeProvider>");
+  return value; // ThemeContextValue, sin null
+}
+```
+
+<Live hint="con provider">
+  <ThemeDemo />
+</Live>
+
+<Live hint="sin provider: el hook lanza un error claro">
+  <ThemeWithoutProvider />
+</Live>
+
+</Example>
+
+<Tip title="Rendimiento">
+  El objeto `value={{ theme, toggle }}` es nuevo en cada render del Provider y re-renderiza a todos
+  los consumidores. Si el Provider se re-renderiza seguido, memoízalo con `useMemo` (o deja que el
+  React Compiler lo haga).
+</Tip>
+
+<SayIt>
+  I create the context as the value type or null, with null as the default, and expose a custom hook
+  that throws a clear error when there's no provider and returns the non-null type. That way
+  consumers get full types and a missing provider fails loudly instead of silently using fake
+  defaults.
+</SayIt>
+
+## ¿Cómo se tipa un custom hook?
+
+Un custom hook es una función: sus parámetros se anotan y el retorno normalmente se **infiere**. El detalle importante está en **qué devuelves**:
+
+- Si devuelves un **array** con valores de tipos distintos, TypeScript lo infiere como **array de la unión**: `(boolean | (() => void))[]`. Al desestructurar, cada elemento es la unión y no puedes llamar a la función sin chequear. Solución: **`as const`**, que lo convierte en una **tupla** `readonly [boolean, () => void]`.
+- Devuelve una **tupla** cuando son 2 valores y el usuario quiere **ponerles nombre** (como `useState`): `const [open, toggleOpen] = useToggle()`.
+- Devuelve un **objeto** cuando son 3 o más, o cuando el orden no es obvio: `const { data, error, isLoading } = useProjects()`.
+- Si el hook trabaja con datos genéricos, hazlo genérico: `function useLocalStorage<T>(key: string, initial: T)`.
+
+<Example title="useToggle con as const">
+
+<Compare>
+<Bad>
+
+```tsx
+function useToggle(initial = false) {
+  const [on, setOn] = useState(initial);
+  return [on, () => setOn((v) => !v)];
+  // (boolean | (() => void))[]
+}
+const [open, toggle] = useToggle();
+toggle();
+// Error: This expression is not callable.
+// (toggle es boolean | (() => void))
+```
+
+</Bad>
+<Good>
+
+```tsx
+function useToggle(initial = false) {
+  const [on, setOn] = useState(initial);
+  const toggle = () => setOn((v) => !v);
+  return [on, toggle] as const;
+  // readonly [boolean, () => void]
+}
+const [open, toggleOpen] = useToggle();
+toggleOpen(); // ok
+```
+
+</Good>
+</Compare>
+
+<Live>
+  <ToggleDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  For custom hooks I annotate the parameters and let the return type be inferred. If I return a
+  tuple I add as const, otherwise TypeScript infers an array of a union and the function isn't
+  callable. I return a tuple for two values the caller will rename, and an object for three or more.
+</SayIt>

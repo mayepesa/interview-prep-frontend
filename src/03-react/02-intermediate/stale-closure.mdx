@@ -1,0 +1,272 @@
+import { Example, Live, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { Counters, DerivedState, EffectEventCounter, LatestValue } from "./stale-closure.examples";
+
+export const meta = {
+  title: "Stale closures y pureza",
+  section: "react-intermediate",
+  order: 110,
+  summary:
+    "Por qué un callback puede leer un estado viejo (stale closure), cómo arreglarlo, qué significa que un componente sea puro y por qué el estado derivado se calcula en vez de guardarse.",
+};
+
+## Cada render es una foto
+
+Para entender las stale closures hay que recordar dos cosas:
+
+1. **Closure**: una función "recuerda" las variables del lugar donde se creó, aunque se ejecute mucho después (ver la página de closures en JavaScript).
+2. **Cada render es una llamada nueva a tu componente.** En cada render, `count` es una **constante nueva** con el valor de ese momento, y los handlers y efectos creados en ese render cierran sobre **esa** constante.
+
+`setCount` no cambia la variable `count` que ya existe: le pide a React un render nuevo, en el que habrá **otra** `count` con el valor nuevo. Las funciones del render anterior siguen viendo el valor anterior.
+
+<Example title="tres 'renders' y tres closures en JavaScript puro">
+
+```js
+function render(count) {
+  // cada llamada tiene su propio `count`
+  return function handler() {
+    return `este handler ve count = ${count}`;
+  };
+}
+
+const h0 = render(0);
+const h1 = render(1);
+const h2 = render(2);
+h0(); // ve 0, aunque "ahora" count sea 2
+```
+
+<Run
+  run={(log) => {
+    function render(count) {
+      return function handler() {
+        return `este handler ve count = ${count}`;
+      };
+    }
+    const handlers = [render(0), render(1), render(2)];
+    handlers.forEach((h, i) => log(`handler del render ${i}:`, h()));
+  }}
+/>
+
+</Example>
+
+## ¿Qué es una stale closure y cómo afecta a los hooks?
+
+Una **stale closure** (closure "rancia" u obsoleta) es una función que se creó en un render viejo y **se sigue usando** después, así que lee props o estado **viejos**.
+
+Pasa cuando una función vive más que su render:
+
+- un `setInterval` o `setTimeout` creado en un efecto con dependencias incompletas,
+- un listener (`addEventListener`) registrado una sola vez,
+- un callback memoizado con `useCallback` al que le faltan dependencias,
+- una respuesta async que usa valores capturados antes del `await`.
+
+<Example title="un intervalo que siempre ve count = 0">
+
+<Compare>
+<Bad>
+
+```tsx
+useEffect(() => {
+  // creado en el primer render: count es 0 para siempre
+  const id = setInterval(() => setCount(count + 1), 1000);
+  return () => clearInterval(id);
+}, []); // falta count
+```
+
+</Bad>
+<Good>
+
+```tsx
+useEffect(() => {
+  // el updater recibe el valor actual: no lee count
+  const id = setInterval(() => setCount((c) => c + 1), 1000);
+  return () => clearInterval(id);
+}, []);
+```
+
+</Good>
+</Compare>
+
+<Live hint="espera unos segundos">
+  <Counters />
+</Live>
+
+</Example>
+
+El primero calcula `0 + 1` cada segundo: pone `1` una y otra vez.
+
+<SayIt>
+  Each render has its own props and state, and functions created in that render close over those
+  values. A stale closure is a function from an old render that's still being called, like an
+  interval created once, so it reads outdated state.
+</SayIt>
+
+## ¿Cómo se arregla una stale closure?
+
+Según el caso:
+
+| Situación                                                              | Solución                                                                                                                               |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| El nuevo estado depende del anterior                                   | **Updater**: `setCount((c) => c + 1)`                                                                                                  |
+| El efecto debe usar el valor actual                                    | **Poner el valor en las dependencias** (el efecto se reinicia con el valor nuevo). El linter `react-hooks/exhaustive-deps` te lo marca |
+| Un callback async necesita el **último** valor, no el de cuando empezó | Guardarlo en un **ref** y leer `ref.current`                                                                                           |
+| Un efecto necesita leer un valor sin reiniciarse cuando cambia         | **`useEffectEvent`** (React 19.2+)                                                                                                     |
+
+<Example title="closure vs ref en un setTimeout">
+
+```tsx
+const latest = useRef(text);
+useEffect(() => {
+  latest.current = text;
+}, [text]);
+
+const sendLater = () => {
+  const captured = text; // valor de ESTE render
+  setTimeout(() => {
+    log(`closure: ${captured} · ref: ${latest.current}`);
+  }, 2000);
+};
+```
+
+<Live hint="haz clic y escribe algo más antes de que pasen 2 s">
+  <LatestValue />
+</Live>
+
+</Example>
+
+Ninguna es "la correcta": a veces quieres el valor de cuando se hizo clic (enviar el mensaje que estaba escrito) y a veces el último (un autosave).
+
+### useEffectEvent
+
+`useEffectEvent` (estable desde React 19.2) crea una función que **siempre ve las props y el estado más recientes**, pero que **no es una dependencia** del efecto. Sirve para separar la parte "reactiva" del efecto (lo que debe reiniciarlo) de la parte que solo lee valores.
+
+<Example title="el intervalo no se reinicia al cambiar el paso">
+
+```tsx
+const onTick = useEffectEvent(() => setCount((c) => c + step)); // lee el step actual
+
+useEffect(() => {
+  const id = setInterval(() => onTick(), 1000);
+  return () => clearInterval(id);
+}, []); // step no es dependencia
+```
+
+<Live hint="cambia el paso mientras corre">
+  <EffectEventCounter />
+</Live>
+
+</Example>
+
+<Pitfall>
+  Una función de `useEffectEvent` solo se llama **desde efectos** (no en el render ni se pasa como
+  prop a otros componentes). Y no es una excusa para silenciar el linter: úsala solo para lógica que
+  de verdad no debe reiniciar el efecto.
+</Pitfall>
+
+<SayIt>
+  I fix stale closures with the updater form of setState when the new value depends on the old one,
+  by adding the value to the dependencies so the effect restarts, or with a ref when an async
+  callback needs the latest value. In React 19.2 there's also useEffectEvent for reading fresh
+  values inside an effect without re-running it.
+</SayIt>
+
+## ¿Qué es un componente puro y qué ventajas tiene?
+
+Un componente es **puro** cuando, igual que una función matemática:
+
+1. **Con las mismas entradas** (props, estado, contexto) **devuelve el mismo JSX.**
+2. **No tiene efectos colaterales durante el render**: no modifica variables de fuera, no muta props ni estado, no hace peticiones, no toca el DOM.
+
+Los efectos colaterales van en **event handlers** (lo primero que deberías considerar) o en **`useEffect`**.
+
+<Compare>
+<Bad>
+
+```tsx
+let renders = 0;
+
+function Row({ entry }) {
+  renders++; // modifica algo de afuera
+  entry.hours = Math.round(entry.hours); // muta una prop
+  return <li>{entry.hours} h</li>;
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function Row({ entry }) {
+  const hours = Math.round(entry.hours); // variable local nueva
+  return <li>{hours} h</li>;
+}
+```
+
+</Good>
+</Compare>
+
+Por qué React lo exige y qué ganas:
+
+- **React puede renderizar cuando quiera**: dos veces, pausar un render y retomarlo, o descartarlo (Concurrent React). Si el render tiene efectos, eso produce bugs.
+- **StrictMode** renderiza dos veces en desarrollo justamente para detectar renders impuros.
+- **Memoización segura**: `memo`, `useMemo` y el **React Compiler** asumen que el mismo input da el mismo output.
+- **Fáciles de testear y de razonar**: la UI es una función del estado.
+
+<Tip title="Mutación local está bien">
+  Crear un array dentro del render y hacerle `push` es puro: el array es nuevo en cada render y
+  nadie más lo ve. Lo prohibido es mutar lo que **ya existía** antes del render.
+</Tip>
+
+<SayIt>
+  A pure component returns the same JSX for the same props, state and context, and has no side
+  effects while rendering. React relies on that to render twice in StrictMode, interrupt renders in
+  concurrent mode and memoize safely, including with the React Compiler.
+</SayIt>
+
+## ¿Qué es el estado derivado?
+
+**Estado derivado** es cualquier valor que se puede **calcular** a partir de props o estado que ya tienes: un total, una lista filtrada, si un formulario es válido, el nombre completo.
+
+Esos valores **no deben ir en `useState`**. Si los guardas, tienes dos fuentes de verdad que pueden desincronizarse, y necesitas un `useEffect` para mantenerlas al día (un render extra y un frame con datos incorrectos).
+
+<Example title="lista filtrada y total calculados en el render">
+
+<Compare>
+<Bad>
+
+```tsx
+const [filter, setFilter] = useState("");
+const [visible, setVisible] = useState(entries);
+const [total, setTotal] = useState(0);
+
+useEffect(() => {
+  const v = entries.filter((e) => e.project.includes(filter));
+  setVisible(v);
+  setTotal(v.reduce((s, e) => s + e.hours, 0));
+}, [entries, filter]);
+```
+
+</Bad>
+<Good>
+
+```tsx
+const [filter, setFilter] = useState("");
+
+const visible = entries.filter((e) => e.project.includes(filter));
+const total = visible.reduce((s, e) => s + e.hours, 0);
+// si fuera caro: useMemo(() => …, [entries, filter])
+```
+
+</Good>
+</Compare>
+
+<Live hint="escribe 'plan'">
+  <DerivedState />
+</Live>
+
+</Example>
+
+<SayIt>
+  If a value can be computed from existing props or state, I compute it during render instead of
+  storing it in state and syncing it with an effect. That keeps a single source of truth and avoids
+  an extra render; if the calculation is expensive I wrap it in useMemo.
+</SayIt>

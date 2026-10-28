@@ -1,0 +1,370 @@
+import { Example, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { hydrate, renderGreetingToString } from "./rendering-architecture.examples";
+
+export const meta = {
+  title: "Arquitectura de renderizado",
+  section: "react-expert",
+  order: 40,
+  summary:
+    "CSR, SSR y SSG; qué es la hidratación y por qué falla; streaming; Server vs Client Components en Next.js; y qué son React Fiber y el React Compiler.",
+};
+
+## CSR, SSR y SSG: ¿dónde se genera el HTML?
+
+La pregunta de fondo es **quién genera el HTML y cuándo**:
+
+- **CSR (Client-Side Rendering)**: el servidor envía un HTML casi vacío (`<div id="root"></div>`) y un bundle de JavaScript. El navegador descarga el JS, lo ejecuta y React construye toda la página. Es lo que hace una app de Vite como este repo.
+- **SSR (Server-Side Rendering)**: en **cada petición**, el servidor ejecuta tus componentes y envía el **HTML ya armado**. El usuario ve contenido antes de que cargue el JS; después React "hidrata" la página para hacerla interactiva.
+- **SSG (Static Site Generation)**: el HTML se genera **una vez, en el build**, y se sirve como archivo estático desde un CDN. Rapidísimo, pero los datos son los del momento del build. **ISR** (Incremental Static Regeneration, en Next.js) lo regenera cada cierto tiempo o bajo demanda.
+
+|                          | CSR                                                     | SSR                                                                 | SSG                           |
+| ------------------------ | ------------------------------------------------------- | ------------------------------------------------------------------- | ----------------------------- |
+| HTML generado            | En el navegador                                         | En el servidor, por petición                                        | En el build                   |
+| Primer contenido visible | Tarde (espera al JS)                                    | Rápido                                                              | Lo más rápido (CDN)           |
+| SEO / previews en redes  | Peor                                                    | Bueno                                                               | Bueno                         |
+| Datos                    | Siempre frescos (los pide el cliente)                   | Frescos por petición                                                | Del momento del build (o ISR) |
+| Costo de servidor        | Ninguno (archivos estáticos)                            | Alto (renderiza en cada visita)                                     | Ninguno en ejecución          |
+| Ideal para               | Apps detrás de login (dashboards, SaaS, apps embebidas) | Páginas con datos personalizados o muy cambiantes que necesitan SEO | Marketing, docs, blogs        |
+
+Frameworks como Next.js permiten **mezclar** estrategias por ruta.
+
+<Example title="SSR en miniatura: renderToString">
+
+```tsx
+import { renderToString } from "react-dom/server";
+
+const html = renderToString(<Greeting name="María" hours={32} />);
+// el servidor mete `html` dentro de su plantilla y lo envía
+```
+
+<Run
+  label="Renderizar a HTML"
+  run={async (log) => {
+    await renderGreetingToString(log);
+  }}
+/>
+
+</Example>
+
+<Tip title="Apps embebidas">
+  Las apps que se ejecutan dentro de otro producto (un iframe en Jira, una extensión) suelen ser CSR
+  puro: no necesitan SEO y el usuario ya está logueado. SSR brilla en páginas públicas.
+</Tip>
+
+<SayIt>
+  With client-side rendering the browser builds the page from JavaScript, so the first content takes
+  longer. With server-side rendering the server sends ready HTML on every request, which is faster
+  to show and better for SEO, and static generation builds that HTML once at build time. Frameworks
+  like Next.js let me choose per route.
+</SayIt>
+
+## ¿Qué es la hidratación?
+
+El HTML que genera el servidor es **solo HTML**: se ve, pero los botones no hacen nada porque no hay event handlers ni estado.
+
+**Hidratar** es el proceso en el que React, en el navegador:
+
+1. vuelve a ejecutar los mismos componentes con los mismos datos,
+2. **recorre el DOM que ya existe** (en vez de crearlo) y lo empareja con lo que renderizó,
+3. engancha los event handlers, el estado y los efectos.
+
+Mientras tanto, la página se **ve** pero no **responde**. El tiempo hasta que hidrata importa (métrica INP / TTI), y por eso existen el streaming y los Server Components: reducir cuánto JS hay que hidratar.
+
+## createRoot vs hydrateRoot
+
+Ambos están en `react-dom/client` y son el punto de entrada de una app React en el navegador:
+
+|              | `createRoot(container)`          | `hydrateRoot(container, <App />)`                    |
+| ------------ | -------------------------------- | ---------------------------------------------------- |
+| HTML inicial | Vacío (CSR)                      | Viene del servidor (SSR / SSG)                       |
+| Qué hace     | Crea todo el DOM desde cero      | Reutiliza el DOM existente y lo hace interactivo     |
+| Cómo se usa  | `createRoot(el).render(<App />)` | `hydrateRoot(el, <App />)` (el JSX va en la llamada) |
+
+`ReactDOM.render` y `ReactDOM.hydrate` son las APIs antiguas (React 17 y antes); **se eliminaron en React 19**. Con ellas no había Concurrent React.
+
+```tsx
+// CSR (este repo)
+createRoot(document.getElementById("root")!).render(<App />);
+
+// SSR
+hydrateRoot(document.getElementById("root")!, <App />, {
+  onRecoverableError: (error) => reportError(error), // p. ej. hydration mismatches
+});
+```
+
+<SayIt>
+  Hydration is React attaching event handlers and state to HTML that was rendered on the server,
+  reusing the existing DOM instead of recreating it. createRoot renders from scratch for client-only
+  apps; hydrateRoot takes over server-rendered HTML. The old ReactDOM.render was removed in React
+  19.
+</SayIt>
+
+## ¿Qué es un hydration mismatch?
+
+Para hidratar, el primer render del cliente tiene que producir **exactamente el mismo HTML** que el servidor. Si no coincide, React no puede emparejar el DOM: es un **hydration mismatch**. React 19 avisa con un error que muestra la diferencia, descarta ese HTML y **vuelve a renderizar en el cliente** (perdiendo la ventaja del SSR, y a veces con un salto visual).
+
+Causas típicas: cualquier cosa que dé **un resultado distinto en el servidor y en el navegador**:
+
+- `Date.now()`, `new Date().toLocaleString()` (otra hora, otra zona horaria, otro idioma),
+- `Math.random()` o IDs aleatorios (usa `useId`),
+- leer `window`, `localStorage` o `navigator` durante el render (en el servidor no existen),
+- `typeof window !== "undefined" ? A : B` en el render,
+- HTML inválido que el navegador "corrige" (un `<div>` dentro de un `<p>`),
+- extensiones del navegador que modifican el DOM antes de que React hidrate.
+
+<Example title="hidratar con el mismo HTML y con uno distinto">
+
+```tsx
+// servidor: <p>Hora: 10:00:00</p>
+// cliente:  <p>Hora: {new Date().toLocaleTimeString()}</p>  ← otra hora
+hydrateRoot(container, <Clock />, { onRecoverableError: (e) => log(e.message) });
+```
+
+<Run
+  label="Hidratar (coincide)"
+  run={async (log) => {
+    await hydrate(log, { mismatch: false });
+  }}
+/>
+
+<Run
+  label="Hidratar (mismatch)"
+  run={async (log) => {
+    await hydrate(log, { mismatch: true });
+  }}
+/>
+
+</Example>
+
+En el build de producción el mensaje viene minificado ("Minified React error #418"); con `npm run dev` verás el texto completo con la diferencia.
+
+Cómo se arregla:
+
+<Compare>
+<Bad>
+
+```tsx
+function LastSaved() {
+  // distinto en servidor y cliente
+  return <p>{new Date().toLocaleTimeString()}</p>;
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function LastSaved() {
+  const [time, setTime] = useState<string | null>(null);
+  useEffect(() => setTime(new Date().toLocaleTimeString()), []); // solo en el cliente
+  return <p>{time ?? "—"}</p>;
+}
+```
+
+</Good>
+</Compare>
+
+- Lo que solo existe en el cliente se calcula **en un `useEffect`** (el primer render coincide con el servidor; después se actualiza).
+- Para IDs, **`useId`**, que genera el mismo valor en servidor y cliente.
+- Para un valor que inevitablemente difiere (una fecha "hace 5 min"), `suppressHydrationWarning` en **ese** elemento silencia el aviso de su texto. Solo un nivel y solo para texto: no lo uses para tapar bugs.
+- Para un componente entero que solo tiene sentido en el cliente, renderízalo solo después de montar, o en Next.js con `next/dynamic` y la opción `ssr: false`.
+
+<SayIt>
+  A hydration mismatch happens when the first client render doesn't produce the same HTML as the
+  server, usually because of dates, random values or browser-only APIs read during render. React
+  then throws away that HTML and re-renders on the client. I move client-only values into an effect,
+  use useId for ids, and only use suppressHydrationWarning for unavoidable text differences.
+</SayIt>
+
+## ¿Qué es el streaming SSR?
+
+Con `renderToString`, el servidor tiene que esperar a **todos** los datos de la página antes de enviar el primer byte. Si una sección tarda 2 segundos, toda la página tarda 2 segundos.
+
+Con **streaming**, el servidor envía el HTML **por partes**:
+
+1. Envía enseguida el "esqueleto": todo lo que no está dentro de un `<Suspense>` pendiente, con los `fallback` en su lugar.
+2. Cuando los datos de una sección están listos, envía su HTML en el mismo response, más un pequeño `<script>` que lo coloca en su sitio.
+3. En el cliente, la **hidratación selectiva** hidrata cada parte en cuanto llega su código, y prioriza la parte con la que el usuario está interactuando.
+
+`<Suspense>` es lo que define los "cortes" del stream. Hay dos APIs según el entorno:
+
+| API                      | Entorno                                                     | Devuelve                        |
+| ------------------------ | ----------------------------------------------------------- | ------------------------------- |
+| `renderToPipeableStream` | Node.js (streams de Node)                                   | Un objeto con `pipe(res)`       |
+| `renderToReadableStream` | Web Streams: Deno, Bun, Cloudflare Workers, edge, navegador | Una promesa de `ReadableStream` |
+
+```tsx
+// Node.js + Express
+import { renderToPipeableStream } from "react-dom/server";
+
+app.get("/", (req, res) => {
+  const { pipe } = renderToPipeableStream(<App />, {
+    bootstrapScripts: ["/client.js"], // el JS que luego llama a hydrateRoot
+    onShellReady() {
+      // el esqueleto está listo: empezar a enviar
+      res.setHeader("content-type", "text/html");
+      pipe(res);
+    },
+    onError(error) {
+      console.error(error);
+    },
+  });
+});
+
+// Edge / Web Streams
+import { renderToReadableStream } from "react-dom/server";
+
+export default async function handler() {
+  const stream = await renderToReadableStream(<App />, { bootstrapScripts: ["/client.js"] });
+  return new Response(stream, { headers: { "content-type": "text/html" } });
+}
+
+// App: el Header sale de inmediato; el gráfico llega cuando sus datos estén
+function App() {
+  return (
+    <Layout>
+      <Header />
+      <Suspense fallback={<ChartSkeleton />}>
+        <HoursChart />
+      </Suspense>
+    </Layout>
+  );
+}
+```
+
+<SayIt>
+  Streaming SSR sends HTML in chunks instead of waiting for all the data. The shell goes out first
+  with Suspense fallbacks, and each suspended section streams in when it's ready, then hydrates
+  selectively. In Node I'd use renderToPipeableStream and on edge runtimes renderToReadableStream.
+</SayIt>
+
+## Server Components vs Client Components
+
+Los **React Server Components (RSC)** son componentes que **se ejecutan solo en el servidor** (en el build o por petición). Su resultado se envía al cliente como una descripción serializada de la UI, **no como JavaScript**. Next.js App Router los usa por defecto.
+
+|                                               | Server Component (por defecto)                  | Client Component (`"use client"`)            |
+| --------------------------------------------- | ----------------------------------------------- | -------------------------------------------- |
+| Dónde se ejecuta                              | Solo en el servidor                             | En el servidor (SSR) **y** en el navegador   |
+| Su JS llega al navegador                      | **No**                                          | Sí                                           |
+| Puede ser `async` y hacer `await`             | Sí: lee la base de datos o una API directamente | No                                           |
+| Secretos / variables privadas                 | Sí                                              | No (todo lo que llega al cliente es público) |
+| `useState`, `useEffect`, eventos (`onClick`)  | **No**                                          | Sí                                           |
+| APIs del navegador (`window`, `localStorage`) | No                                              | Sí (en efectos y handlers)                   |
+
+**`"use client"`** al principio de un archivo marca una **frontera**: ese módulo y todo lo que importa pasa a ser código de cliente. No hace falta ponerlo en cada componente interactivo, solo en el punto de entrada de cada "isla".
+
+Reglas que se preguntan:
+
+1. Un Server Component **puede renderizar** Client Components y pasarles props.
+2. Esas props tienen que ser **serializables**: strings, números, objetos planos, arrays, fechas, promesas, JSX. **No funciones** (salvo Server Actions).
+3. Un Client Component **no puede importar** un Server Component. Pero sí puede **recibirlo como `children`** (u otra prop con JSX): el servidor lo renderiza y el cliente solo coloca el resultado.
+4. El patrón: **datos y layout en el servidor; interactividad en hojas pequeñas de cliente**.
+
+```tsx
+// app/projects/page.tsx — Server Component
+import { db } from "@/lib/db";
+import { FavoriteButton } from "./FavoriteButton";
+
+export default async function ProjectsPage() {
+  const projects = await db.project.findMany(); // directo a la base de datos
+  return (
+    <ul>
+      {projects.map((p) => (
+        <li key={p.id}>
+          {p.name} <FavoriteButton projectId={p.id} /> {/* isla de cliente */}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// app/projects/FavoriteButton.tsx — Client Component
+("use client");
+import { useState } from "react";
+
+export function FavoriteButton({ projectId }: { projectId: string }) {
+  const [fav, setFav] = useState(false);
+  return <button onClick={() => setFav(!fav)}>{fav ? "★" : "☆"}</button>;
+}
+```
+
+<Pitfall title="'use client' no significa 'solo en el cliente'">
+  Los Client Components **también se renderizan en el servidor** (SSR) para el HTML inicial; después
+  se hidratan. `"use client"` significa "este código se envía al navegador". Por eso igual hay que
+  cuidar los hydration mismatches en ellos.
+</Pitfall>
+
+<SayIt>
+  Server Components run only on the server: they can be async, read data directly and send no
+  JavaScript to the browser, but they can't use state, effects or event handlers. Client Components,
+  marked with "use client", are server-rendered and then hydrated, so they can be interactive. I
+  keep data fetching on the server and push small interactive leaves to the client.
+</SayIt>
+
+## ¿Cómo usar Context desde un Server Component?
+
+Los Server Components **no pueden crear ni leer un Context**: Context depende de estado y del árbol en el cliente. La solución es un **Provider que sea Client Component**, al que el Server Component le pasa los datos como props y el resto de la página como `children`:
+
+```tsx
+// app/providers.tsx
+"use client";
+import { createContext, use, type ReactNode } from "react";
+
+const UserContext = createContext<User | null>(null);
+export const useUser = () => use(UserContext);
+
+export function UserProvider({ user, children }: { user: User; children: ReactNode }) {
+  return <UserContext value={user}>{children}</UserContext>;
+}
+
+// app/layout.tsx — Server Component
+import { UserProvider } from "./providers";
+
+export default async function RootLayout({ children }: { children: ReactNode }) {
+  const user = await getCurrentUser(); // en el servidor
+  return (
+    <html lang="es">
+      <body>
+        <UserProvider user={user}>{children}</UserProvider>{" "}
+        {/* children siguen siendo Server Components */}
+      </body>
+    </html>
+  );
+}
+```
+
+Los `children` que pasan por el Provider **siguen siendo Server Components**: el Provider no "convierte" en cliente lo que envuelve. Solo los Client Components de más abajo pueden leer el contexto con `useUser()`.
+
+<SayIt>
+  Server Components can't use Context, so I create a small Client Component provider, pass it the
+  server data as props, and wrap the rest of the tree as children. Those children stay Server
+  Components, and any Client Component below can read the context.
+</SayIt>
+
+## ¿Qué es React Fiber?
+
+**Fiber** es la **arquitectura interna del reconciliador** de React, introducida en React 16. Reemplazó al reconciliador anterior ("stack reconciler"), que recorría el árbol de forma recursiva y no podía detenerse.
+
+Ideas clave:
+
+- Cada componente del árbol tiene un objeto **fiber**: una unidad de trabajo con su tipo, props, estado (la lista de hooks), y enlaces a su padre, su primer hijo y su hermano.
+- Como es una lista enlazada recorrida con un bucle (no con recursión), React puede **pausar** el trabajo entre un fiber y otro, **priorizar** actualizaciones (_lanes_), **retomar** o **descartar** un render a medias.
+- Mantiene dos árboles: el **actual** (lo que está en pantalla) y el **work-in-progress** (el que se está construyendo). Al terminar, en la fase de **commit**, los intercambia de una sola vez, así nunca se ve una UI a medio actualizar.
+
+Todo lo concurrente (transiciones, Suspense, streaming, hidratación selectiva) se construye sobre Fiber. No es una API que uses directamente.
+
+<SayIt>
+  Fiber is React's internal reconciliation engine since React 16. It represents each component as a
+  unit of work, so React can pause, prioritize, resume or throw away rendering work, and then commit
+  the finished tree at once. That's what makes concurrent features like transitions and Suspense
+  possible.
+</SayIt>
+
+## ¿Y el React Compiler?
+
+Es una herramienta de **build** que analiza tus componentes y agrega **memoización automática**, haciendo que `useMemo`, `useCallback` y `memo` manuales sean la excepción. Funciona con CSR, SSR y Server Components por igual, porque actúa sobre el código fuente antes del bundle. Requiere que los componentes sigan las reglas de React (pureza, no mutar props ni estado). Más detalle en la página de memoización.
+
+<SayIt>
+  The React Compiler is a build-time optimization that memoizes components and values automatically.
+  It's independent of where you render, and it relies on components following the rules of React.
+</SayIt>

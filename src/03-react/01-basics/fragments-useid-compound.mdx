@@ -1,0 +1,337 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  FragmentFlexDemo,
+  FragmentTable,
+  Glossary,
+  TabOutsideTabs,
+  TabsDemo,
+  UseIdDemo,
+} from "./fragments-useid-compound.examples";
+
+export const meta = {
+  title: "Fragments, useId y Compound Components",
+  section: "react-basics",
+  order: 90,
+  summary:
+    "Cómo agrupar elementos sin agregar nodos al DOM, cómo generar ids accesibles con useId y cómo diseñar componentes que trabajan juntos con el patrón Compound Components.",
+};
+
+## ¿Qué son los Fragments?
+
+Un componente solo puede devolver **un** elemento raíz, porque una función solo devuelve un valor. Si quieres devolver varios hermanos, tienes que agruparlos. Un **Fragment** los agrupa **sin crear ningún nodo en el DOM**: en el HTML final aparecen solo los hijos.
+
+Hay dos formas de escribirlo:
+
+```tsx
+// Sintaxis corta (la más usada)
+<>
+  <td>{project}</td>
+  <td>{hours} h</td>
+</>;
+
+// Forma explícita: necesaria si quieres pasarle una key
+import { Fragment } from "react";
+
+<Fragment key={item.id}>
+  <dt>{item.term}</dt>
+  <dd>{item.definition}</dd>
+</Fragment>;
+```
+
+`<>…</>` no acepta ninguna prop. `<Fragment>` acepta `key`, que es lo único que vas a necesitar en el día a día.
+
+<SayIt>
+  A fragment lets a component return several sibling elements without adding an extra node to the
+  DOM. I use the short syntax with empty tags, and the explicit Fragment when I need a key.
+</SayIt>
+
+## ¿Por qué usar un Fragment en vez de un div?
+
+Envolver todo en un `<div>` "funciona", pero tiene costos reales:
+
+1. **HTML inválido.** Hay elementos que solo aceptan ciertos hijos: un `<tr>` solo admite `<td>`/`<th>`; un `<ul>` solo `<li>`; un `<dl>` solo `<dt>`/`<dd>` (o `<div>` envolviendo pares). Un `<div>` en medio rompe la estructura, la accesibilidad (los lectores de pantalla dejan de reconocer la tabla o la lista) y React avisa con un error de _validateDOMNesting_ en desarrollo.
+2. **Rompe layouts de Flexbox y Grid.** Los estilos de un contenedor flex/grid se aplican a sus **hijos directos**. Un `<div>` intermedio se convierte en el único hijo y sus elementos internos dejan de participar en el layout (pierden el `gap`, el `justify-content`, las columnas del grid).
+3. **Selectores CSS** como `.toolbar > button` o `:first-child` dejan de coincidir.
+4. **DOM más grande** ("div soup"): más nodos, más memoria y más difícil de inspeccionar. En una lista de miles de filas se nota.
+
+Usa un `<div>` (u otro elemento) cuando **sí** necesitas un nodo: para aplicarle estilos, un `ref`, un evento o un rol de accesibilidad.
+
+<Example title="un Fragment dentro de una tabla">
+
+```tsx
+function Cells({ project, hours }: { project: string; hours: number }) {
+  return (
+    <>
+      <td>{project}</td>
+      <td>{hours} h</td>
+    </>
+  );
+}
+
+<tr>
+  <Cells project="Capacity planner" hours={12} />
+</tr>;
+```
+
+<Live hint="las celdas quedan directamente dentro del tr">
+  <FragmentTable />
+</Live>
+
+</Example>
+
+<Example title="el div extra rompe el layout flex">
+
+<Compare>
+<Bad>
+
+```tsx
+function Actions() {
+  return (
+    <div>
+      <button>Editar</button>
+      <button>Borrar</button>
+    </div>
+  );
+}
+// el toolbar flex ve 2 hijos: <strong> y <div>
+```
+
+</Bad>
+<Good>
+
+```tsx
+function Actions() {
+  return (
+    <>
+      <button>Editar</button>
+      <button>Borrar</button>
+    </>
+  );
+}
+// el toolbar flex ve 3 hijos y reparte el espacio
+```
+
+</Good>
+</Compare>
+
+<Live hint="compara cómo se reparte el espacio en cada toolbar">
+  <FragmentFlexDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  An extra div can produce invalid HTML, for example inside a table row or a list, and it breaks
+  flex and grid layouts because those styles apply to direct children. Fragments keep the DOM clean
+  and valid. I only add a wrapper element when I actually need it for styling, a ref or an event.
+</SayIt>
+
+## ¿Cuándo necesita key un Fragment?
+
+Cuando renderizas una **lista** en la que cada ítem produce **varios elementos hermanos**, el elemento que devuelve el `map` es el Fragment, así que **la key va en el Fragment**. Como la sintaxis corta `<>` no acepta props, tienes que usar `<Fragment key={…}>`.
+
+El caso típico es una lista de definiciones (`<dl>`), donde cada término es un par `<dt>` + `<dd>` sin envoltorio, o filas de tabla que generan varios `<tr>` por ítem.
+
+<Example title="glosario con dt y dd">
+
+<Compare>
+<Bad>
+
+```tsx
+{
+  glossary.map((item) => (
+    <>
+      {" "}
+      {/* no puede llevar key: warning */}
+      <dt>{item.term}</dt>
+      <dd>{item.definition}</dd>
+    </>
+  ));
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+{
+  glossary.map((item) => (
+    <Fragment key={item.term}>
+      <dt>{item.term}</dt>
+      <dd>{item.definition}</dd>
+    </Fragment>
+  ));
+}
+```
+
+</Good>
+</Compare>
+
+<Live>
+  <Glossary />
+</Live>
+
+</Example>
+
+<SayIt>
+  If each item in a mapped list renders several siblings, the key has to go on the fragment. The
+  short syntax can't take props, so in that case I import Fragment and write it explicitly with the
+  key.
+</SayIt>
+
+## ¿Qué hace el hook useId?
+
+`useId()` genera un **id único y estable** para una instancia de componente. Sirve para conectar elementos con **atributos de accesibilidad** que necesitan ids: `htmlFor` + `id` de un input, `aria-describedby`, `aria-labelledby`, `aria-controls`.
+
+¿Por qué no escribir el id a mano o generarlo?
+
+- **Un id fijo** (`id="hours"`) se repite si renderizas el componente dos veces en la página, y los ids del DOM deben ser únicos. El label del segundo campo enfocaría el primer input.
+- **`Math.random()` o un contador global** dan un valor distinto en el servidor y en el cliente, lo que provoca errores de **hidratación** con SSR (Next.js). Además, `Math.random()` cambiaría en cada render.
+- **`useId`** se basa en la **posición del componente en el árbol**, que es la misma en el servidor y en el cliente. Es estable entre renders y único en la app.
+
+Reglas:
+
+- Llama a `useId` **una vez** por componente y deriva el resto con sufijos: `` `${id}-hint` ``, `` `${id}-error` ``.
+- **No lo uses para keys** de listas: las keys deben salir de los datos.
+- El formato del id es un detalle interno que ha cambiado entre versiones de React: trátalo como un valor opaco y no lo uses en selectores CSS.
+- Si tienes varias apps de React en la misma página, `createRoot(el, { identifierPrefix: "app1-" })` evita choques.
+
+<Example title="un campo accesible reutilizable">
+
+```tsx
+function Field({ label, hint }: { label: string; hint: string }) {
+  const id = useId();
+  const hintId = `${id}-hint`;
+
+  return (
+    <div>
+      <label htmlFor={id}>{label}</label>
+      <input id={id} aria-describedby={hintId} />
+      <small id={hintId}>{hint}</small>
+    </div>
+  );
+}
+
+<Field label="Proyecto" hint="Nombre como aparece en Jira" />
+<Field label="Horas" hint="Máximo 24 por día" />
+```
+
+<Live hint="haz clic en cada label: cada uno enfoca su propio input">
+  <UseIdDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  useId generates a unique, stable id per component instance, which I use to wire accessibility
+  attributes like htmlFor and aria-describedby. Unlike a hardcoded id it doesn't clash when the
+  component renders twice, and unlike Math.random it matches between server and client, so there are
+  no hydration errors. It's not for list keys.
+</SayIt>
+
+## ¿Qué es el patrón Compound Components?
+
+**Compound Components** (componentes compuestos) es un patrón en el que **varios componentes trabajan juntos** para formar uno solo, y comparten estado de forma **implícita**, sin que tú tengas que pasarles props a cada uno. La idea viene del HTML nativo:
+
+```html
+<select>
+  <option value="week">Semana</option>
+  <option value="month">Mes</option>
+</select>
+```
+
+`<select>` y `<option>` no funcionan por separado: el `select` maneja el estado (cuál está seleccionado) y las `option` lo leen. Con compound components, tu API se ve igual:
+
+```tsx
+<Tabs defaultValue="week">
+  <Tabs.List>
+    <Tabs.Tab value="week">Semana</Tabs.Tab>
+    <Tabs.Tab value="month">Mes</Tabs.Tab>
+  </Tabs.List>
+  <Tabs.Panel value="week">…</Tabs.Panel>
+  <Tabs.Panel value="month">…</Tabs.Panel>
+</Tabs>
+```
+
+### ¿Por qué usarlo?
+
+La alternativa es un componente "configurable" con un montón de props: `<Tabs items={[…]} renderTab={…} panelClassName={…} showIcons iconPosition="left" />`. Cada caso nuevo agrega una prop más (_prop explosion_). Con compound components:
+
+- **El consumidor controla el markup**: el orden, qué va dentro de cada panel, estilos o elementos extra entre las piezas.
+- **El estado queda encapsulado**: el que usa `Tabs` no maneja `active` ni callbacks.
+- **La API es declarativa y se lee como HTML**.
+
+Lo usan librerías como **Radix UI**, **Headless UI**, **Reach UI** y **Atlassian Design System** (Jira).
+
+### ¿Cómo se implementa?
+
+1. El componente padre (`Tabs`) guarda el estado y lo expone con un **Context**.
+2. Cada pieza (`Tab`, `Panel`) lee el contexto con `use(TabsContext)` (o `useContext`).
+3. Un hook propio (`useTabs`) lanza un **error claro** si alguien usa una pieza fuera del padre.
+4. Las piezas se cuelgan del padre como propiedades (`Tabs.Tab = Tab`) para tener un namespace. También es válido exportarlas por separado (`TabList`, `Tab`).
+
+En React 19 el propio contexto se usa como provider (`<TabsContext value={…}>`) y se puede leer con `use()`.
+
+<Example title="Tabs con contexto">
+
+```tsx
+const TabsContext = createContext<{ active: string; setActive: (v: string) => void } | null>(null);
+
+function useTabs() {
+  const ctx = use(TabsContext);
+  if (!ctx) throw new Error("Tabs.* debe usarse dentro de <Tabs>");
+  return ctx;
+}
+
+function Tabs({ defaultValue, children }: { defaultValue: string; children: ReactNode }) {
+  const [active, setActive] = useState(defaultValue);
+  return <TabsContext value={{ active, setActive }}>{children}</TabsContext>;
+}
+
+function Tab({ value, children }: { value: string; children: ReactNode }) {
+  const { active, setActive } = useTabs();
+  return (
+    <button role="tab" aria-selected={active === value} onClick={() => setActive(value)}>
+      {children}
+    </button>
+  );
+}
+
+function TabPanel({ value, children }: { value: string; children: ReactNode }) {
+  const { active } = useTabs();
+  return active === value ? <div role="tabpanel">{children}</div> : null;
+}
+
+Tabs.List = TabList;
+Tabs.Tab = Tab;
+Tabs.Panel = TabPanel;
+```
+
+<Live hint="cambia de pestaña: cada panel tiene contenido libre">
+  <TabsDemo />
+</Live>
+
+<Live hint="usar una pieza fuera del padre da un error explícito">
+  <TabOutsideTabs />
+</Live>
+
+</Example>
+
+<Pitfall>
+  Una implementación antigua del patrón usaba `React.Children.map` + `cloneElement` para inyectar props a los
+  hijos directos. Es frágil: se rompe si envuelves un `Tab` en un `<div>` o en otro componente. Con contexto,
+  las piezas pueden estar a cualquier profundidad.
+</Pitfall>
+
+<Tip>
+  Para un componente de Tabs real, la accesibilidad pide más: navegación con flechas,
+  `aria-controls`, `tabIndex` y relacionar cada tab con su panel (aquí `useId` es perfecto). Por eso
+  en producción conviene una librería headless como Radix.
+</Tip>
+
+<SayIt>
+  Compound components are a set of components that work together and share implicit state, like
+  select and option in HTML. The parent holds the state and exposes it through context, and each
+  piece reads it. This avoids a huge props API and lets the consumer control the markup; libraries
+  like Radix use it heavily.
+</SayIt>

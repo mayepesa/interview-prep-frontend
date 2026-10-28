@@ -1,3 +1,6 @@
+// ¿Empezaste este ejercicio? Cambia `false` por `true` y sus tests empezarán a correr.
+export const started = false;
+
 export function twoSum(nums: number[], target: number): [number, number] | null {
   throw new Error("TODO");
 }

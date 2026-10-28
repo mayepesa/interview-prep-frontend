@@ -1,0 +1,291 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  AccordionLiftedState,
+  AccordionLocalState,
+  SelectedProject,
+  Timesheet,
+} from "./lifting-state.examples";
+
+export const meta = {
+  title: "Subir el estado",
+  section: "react-basics",
+  order: 60,
+  summary:
+    "Cómo compartir estado entre componentes hermanos subiéndolo al padre común, qué es una sola fuente de verdad, por qué el estado derivado se calcula y no se guarda, y qué hacer con el prop drilling.",
+};
+
+## ¿Qué significa "subir el estado" (lifting state up)?
+
+En React el estado es **local**: vive dentro de un componente y nadie más lo puede leer. Los datos solo bajan por props, de padre a hijo; los hermanos **no se pueden comunicar directamente**.
+
+Entonces, ¿qué haces cuando **dos componentes necesitan el mismo dato**, o uno necesita cambiar algo que otro muestra? **Subes el estado**: lo quitas de los hijos y lo pones en su **padre común más cercano**. El padre:
+
+1. guarda el estado,
+2. se lo pasa a los hijos **como props** (para que lo lean),
+3. les pasa **funciones** (`onToggle`, `onChange`) para que lo puedan cambiar.
+
+Los hijos pasan de ser **no controlados** (deciden solos) a **controlados** (el padre decide por ellos). Es el mismo concepto que un input controlado: `<input value={…} onChange={…} />`.
+
+### Ejemplo clásico: un acordeón
+
+Cada panel con su propio `isOpen` funciona, pero **no se pueden coordinar**: si quieres que solo uno esté abierto a la vez, ningún panel sabe qué hacen los demás. La solución es mover el estado al acordeón: un solo `openIndex` en el padre, y cada panel recibe `isOpen` y `onToggle`.
+
+<Example title="estado en cada panel vs estado en el padre">
+
+<Compare>
+<Bad>
+
+```tsx
+function Panel({ title, children }) {
+  const [isOpen, setIsOpen] = useState(false);
+  // cada panel decide solo → pueden abrirse todos
+  return (
+    <>
+      <button onClick={() => setIsOpen(!isOpen)}>{title}</button>
+      {isOpen && <p>{children}</p>}
+    </>
+  );
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function Accordion() {
+  const [openIndex, setOpenIndex] = useState<number | null>(0);
+  return sections.map((s, index) => (
+    <Panel
+      key={s.title}
+      title={s.title}
+      isOpen={openIndex === index}
+      onToggle={() => setOpenIndex(openIndex === index ? null : index)}
+    >
+      {s.body}
+    </Panel>
+  ));
+}
+```
+
+</Good>
+</Compare>
+
+<Live hint="estado local: se pueden abrir todos a la vez">
+  <AccordionLocalState />
+</Live>
+
+<Live hint="estado en el padre: solo uno abierto">
+  <AccordionLiftedState />
+</Live>
+
+</Example>
+
+### ¿Dónde poner el estado?
+
+Para cada pieza de estado:
+
+1. Identifica **todos** los componentes que la leen o la cambian.
+2. Busca su **padre común más cercano**.
+3. Pon el estado ahí (o más arriba, si tiene sentido). Si no hay un padre natural, crea un componente nuevo solo para guardarlo.
+
+Y al revés: si un estado solo lo usa **un** componente, **no lo subas**. Mantenerlo lo más abajo posible reduce re-renders y acoplamiento.
+
+<SayIt>
+  When two components need the same data, I move the state up to their closest common parent and
+  pass it down as props, along with callbacks to change it. The children become controlled
+  components. I keep state as low as possible and only lift it when it needs to be shared.
+</SayIt>
+
+## ¿Qué es una "sola fuente de verdad"?
+
+**Single source of truth** significa que cada dato **vive en un solo lugar**: un solo componente es dueño de ese estado, y todos los demás lo reciben de él (por props o contexto). No hay copias que mantener sincronizadas.
+
+Si dos componentes guardan su propia copia del mismo dato, tarde o temprano se **desincronizan**: uno se actualiza, el otro no, y la UI muestra dos verdades distintas. Por eso, en vez de "sincronizar" estados con efectos, se **sube** el estado.
+
+<Example title="mini timesheet: los inputs y el total comparten estado">
+
+```tsx
+function Timesheet() {
+  const [hours, setHours] = useState<WeekHours>({ Lun: 8, Mar: 8, Mié: 8, Jue: 8, Vie: 8 });
+
+  return (
+    <>
+      {DAYS.map((day) => (
+        <HoursInput
+          key={day}
+          day={day}
+          value={hours[day]}
+          onChange={(value) => setHours((prev) => ({ ...prev, [day]: value }))}
+        />
+      ))}
+      <WeekTotal hours={hours} />
+    </>
+  );
+}
+```
+
+<Live hint="cambia las horas: el total siempre coincide">
+  <Timesheet />
+</Live>
+
+</Example>
+
+Si cada `HoursInput` tuviera su propio `useState`, `WeekTotal` no podría leerlos. Con el estado en `Timesheet`, hay **una** verdad: el objeto `hours`.
+
+<SayIt>
+  Single source of truth means each piece of data lives in exactly one place, owned by one
+  component, and everything else reads it from there. If two components keep their own copies, they
+  eventually drift apart, so instead of syncing them I lift the state up.
+</SayIt>
+
+## ¿Qué es el estado derivado y por qué calcularlo en el render?
+
+**Estado derivado** es cualquier valor que se puede **calcular** a partir de props o de otro estado: un total, una lista filtrada, un contador de elementos, si un formulario es válido, el ítem seleccionado.
+
+La regla: **no lo guardes en otro `useState`; calcúlalo durante el render**.
+
+Guardarlo trae problemas:
+
+- **Duplicación**: ahora hay dos fuentes de verdad que pueden desincronizarse.
+- **Renders extra**: si lo sincronizas con `useEffect`, React renderiza primero con el valor viejo y otra vez con el nuevo.
+- **Más código** y más lugares donde equivocarse.
+
+Si el cálculo es realmente costoso (miles de ítems), lo envuelves en `useMemo`, pero sigue siendo derivado.
+
+<Example title="total como estado vs total derivado">
+
+<Compare>
+<Bad>
+
+```tsx
+const [hours, setHours] = useState(initial);
+const [total, setTotal] = useState(0);
+
+useEffect(() => {
+  setTotal(Object.values(hours).reduce((s, h) => s + h, 0));
+}, [hours]); // render extra + dos fuentes de verdad
+```
+
+</Bad>
+<Good>
+
+```tsx
+const [hours, setHours] = useState(initial);
+
+const total = Object.values(hours).reduce((s, h) => s + h, 0);
+const hasOvertime = total > 40;
+```
+
+</Good>
+</Compare>
+
+</Example>
+
+### Guarda ids, no objetos copiados
+
+Un caso muy común de estado duplicado: guardar el **objeto** seleccionado (`useState(project)`). Si después el proyecto cambia en la lista (por ejemplo, suma horas), la copia seleccionada queda **vieja**. La solución es guardar solo el **id** y derivar el objeto con `find`.
+
+<Example title="selectedId + find">
+
+<Compare>
+<Bad>
+
+```tsx
+const [selected, setSelected] = useState<Project>(projects[0]);
+// si projects cambia, selected sigue siendo la copia vieja
+```
+
+</Bad>
+<Good>
+
+```tsx
+const [selectedId, setSelectedId] = useState("p1");
+const selected = projects.find((p) => p.id === selectedId);
+```
+
+</Good>
+</Compare>
+
+<Live hint="suma horas al proyecto seleccionado: el resumen se actualiza">
+  <SelectedProject />
+</Live>
+
+</Example>
+
+<SayIt>
+  Derived state is anything I can compute from existing props or state, like a total or a filtered
+  list. I calculate it during render instead of storing it, because storing it creates a second
+  source of truth and extra renders. For selections I store the id and derive the object.
+</SayIt>
+
+## ¿Qué es el prop drilling y cuándo usar Context?
+
+**Prop drilling** es pasar una prop a través de **varios niveles** de componentes intermedios que **no la usan**, solo para que llegue a un componente profundo.
+
+```tsx
+<App user={user}>
+  <Layout user={user}>          {/* no usa user */}
+    <Sidebar user={user}>       {/* no usa user */}
+      <UserMenu user={user} />  {/* el único que lo necesita */}
+```
+
+Pasar props 2 o 3 niveles **no es un problema**: es explícito y fácil de seguir. Se vuelve molesto cuando son muchos niveles, cuando muchos componentes necesitan el mismo dato, o cuando cada refactor obliga a tocar todos los intermedios.
+
+Soluciones, en este orden:
+
+1. **Composición**: en vez de pasar el dato por los intermedios, pasa **el componente ya armado** como `children` o como slot. Los intermedios ya no necesitan saber del dato.
+2. **Context**: para datos "globales" de una parte del árbol que leen muchos componentes a distintas profundidades: usuario autenticado, tema, idioma, permisos, feature flags. Se ve en la página de [Context](#03-react/02-intermediate/context).
+3. **Librerías de estado** (Zustand, Redux Toolkit) o de **estado de servidor** (TanStack Query) cuando el estado es grande, cambia mucho o es caché de la API.
+
+<Example title="composición antes que context">
+
+<Compare>
+<Bad>
+
+```tsx
+function Layout({ user }: { user: User }) {
+  return <Sidebar user={user} />; // solo lo pasa
+}
+function Sidebar({ user }: { user: User }) {
+  return (
+    <nav>
+      <UserMenu user={user} />
+    </nav>
+  );
+}
+<Layout user={user} />;
+```
+
+</Bad>
+<Good>
+
+```tsx
+function Layout({ sidebar }: { sidebar: ReactNode }) {
+  return <aside>{sidebar}</aside>;
+}
+// quien tiene el dato arma la pieza
+<Layout
+  sidebar={
+    <nav>
+      <UserMenu user={user} />
+    </nav>
+  }
+/>;
+```
+
+</Good>
+</Compare>
+
+</Example>
+
+<Pitfall>
+  Context no es una herramienta de rendimiento ni un reemplazo de todo el estado: cuando cambia su
+  valor, **todos** los componentes que lo leen se re-renderizan. Úsalo para datos que cambian poco o
+  divídelo en varios contextos.
+</Pitfall>
+
+<SayIt>
+  Prop drilling is passing props through components that don't use them just to reach a deep child.
+  A couple of levels is fine. When it grows, I first try composition, passing ready-made elements as
+  children, and for truly global data like the current user or theme I use context.
+</SayIt>

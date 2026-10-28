@@ -1,0 +1,446 @@
+import { Example, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../app/study";
+import { bfs, dfs, LinkedList, LRUCache, Queue, Stack } from "./data-structures";
+
+export const meta = {
+  title: "Estructuras de datos",
+  section: "cs",
+  order: 20,
+  summary:
+    "Arrays, objetos y Map, Set, pila, cola, lista enlazada, árboles (el DOM) con DFS y BFS, y la caché LRU: cómo funciona cada una, su complejidad y cuándo usarla, con código que puedes ejecutar.",
+};
+
+## ¿Qué estructura de datos elijo?
+
+Elegir la estructura correcta es más importante que cualquier micro-optimización: decide si una operación es O(1) u O(n). En front end la pregunta casi siempre es "¿qué operación hago más?".
+
+| Necesito…                                                 | Uso               | Por qué                                      |
+| --------------------------------------------------------- | ----------------- | -------------------------------------------- |
+| Una lista ordenada, recorrerla, acceder por posición      | **Array**         | Acceso por índice O(1), métodos de recorrido |
+| Buscar por clave (id)                                     | **Map** u objeto  | `get` en O(1) en vez de `find` en O(n)       |
+| Saber si algo ya existe, quitar duplicados                | **Set**           | `has` en O(1)                                |
+| Deshacer/rehacer, validar anidamiento                     | **Pila** (stack)  | El último en entrar es el primero en salir   |
+| Procesar en orden de llegada                              | **Cola** (queue)  | El primero en entrar es el primero en salir  |
+| Datos jerárquicos (DOM, menú, comentarios con respuestas) | **Árbol**         | Se recorre con DFS o BFS                     |
+| Caché con límite de tamaño                                | **LRU** (con Map) | Expulsa lo menos usado en O(1)               |
+
+El código de esta página está en `src/08-cs-fundamentals/data-structures.ts`, con tests en `cs.test.ts`.
+
+<SayIt>
+  I choose the structure by the operation I do most. A Map for lookups by key, a Set for membership
+  and deduplication, a stack for undo or nesting, a queue for processing in order, and a tree for
+  hierarchical data like the DOM.
+</SayIt>
+
+## ¿Cómo funciona un array y qué cuesta cada operación?
+
+Un **array** guarda elementos en **posiciones numeradas consecutivas**. Por eso leer `arr[i]` es O(1): el motor calcula directamente dónde está.
+
+El costo de modificar depende de **dónde**:
+
+- **Al final** (`push`, `pop`): O(1). No hay que mover nada.
+- **Al inicio o en el medio** (`unshift`, `shift`, `splice`): O(n). Hay que **mover todos los elementos** siguientes una posición para mantener los índices.
+- **Buscar por valor** (`includes`, `indexOf`, `find`): O(n). Hay que mirar uno por uno.
+- **Ordenar** (`sort`, `toSorted`): O(n log n).
+
+En JavaScript los arrays son dinámicos (crecen solos) y pueden mezclar tipos, aunque los motores los optimizan mejor si son homogéneos.
+
+<Example title="final barato, inicio caro">
+
+```ts
+const arr = Array.from({ length: 100_000 }, (_, i) => i);
+arr.push(1); // O(1)
+arr.unshift(1); // O(n): mueve 100 000 elementos
+```
+
+<Run
+  label="10 000 inserciones en cada extremo"
+  run={(log) => {
+    const a = Array.from({ length: 100000 }, (_, i) => i);
+    let t = performance.now();
+    for (let i = 0; i < 10000; i++) a.push(i);
+    log(`push:    ${(performance.now() - t).toFixed(1)} ms`);
+    const b = Array.from({ length: 100000 }, (_, i) => i);
+    t = performance.now();
+    for (let i = 0; i < 10000; i++) b.unshift(i);
+    log(`unshift: ${(performance.now() - t).toFixed(1)} ms`);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Arrays give constant-time access by index and push and pop at the end are O(1). Inserting or
+  removing at the start is O(n) because every element has to shift, and searching by value is
+  linear.
+</SayIt>
+
+## ¿Objeto o Map?
+
+Los dos guardan pares **clave → valor** con búsqueda en O(1) promedio (por dentro son _hash tables_: la clave se convierte en una posición con una función hash). Pero `Map` está diseñado para eso y el objeto no:
+
+|                          | Objeto `{}`                                                 | `Map`                                            |
+| ------------------------ | ----------------------------------------------------------- | ------------------------------------------------ |
+| Tipos de clave           | Solo strings y symbols (`obj[1]` se guarda como `"1"`)      | **Cualquier valor**: números, objetos, funciones |
+| Orden                    | Casi el de inserción, pero las claves numéricas van primero | **Siempre el de inserción**                      |
+| Tamaño                   | `Object.keys(obj).length`: O(n)                             | `map.size`: O(1)                                 |
+| Claves heredadas         | Sí (`"toString" in {}` es `true`)                           | No                                               |
+| Agregar y quitar seguido | Los motores lo optimizan peor                               | Optimizado para eso                              |
+| Serializar a JSON        | Directo                                                     | Hay que convertirlo                              |
+
+Regla práctica: **objeto** para datos con forma fija (un registro, props, JSON de la API); **Map** para colecciones dinámicas indexadas por id, cachés y cuando la clave no es un string.
+
+<Example title="claves que no son strings">
+
+```ts
+const obj: Record<string, string> = {};
+obj[1] = "uno";
+Object.keys(obj); // ["1"]: el número se convirtió en string
+
+const map = new Map<number, string>();
+map.set(1, "uno");
+map.get(1); // "uno", la clave sigue siendo número
+```
+
+<Run
+  label="Comparar"
+  run={(log) => {
+    const obj = {};
+    obj[1] = "uno";
+    obj["b"] = "b";
+    obj[0] = "cero";
+    log("claves del objeto:", Object.keys(obj));
+    const map = new Map([
+      [1, "uno"],
+      ["b", "b"],
+      [0, "cero"],
+    ]);
+    log("claves del Map:", [...map.keys()]);
+    const user = { id: 7 };
+    const visits = new Map([[user, 3]]);
+    log("Map con un objeto como clave:", visits.get(user));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Both give constant-time lookups. I use plain objects for records with a known shape, like API
+  data, and Map for dynamic collections keyed by id or caches: it accepts any key type, keeps
+  insertion order and has size in constant time.
+</SayIt>
+
+## ¿Para qué sirve un Set?
+
+Un **`Set`** es una colección de **valores únicos**: agregar un valor que ya existe no hace nada. Igual que `Map`, `has`, `add` y `delete` son O(1) promedio.
+
+Usos típicos:
+
+- **Quitar duplicados**: `[...new Set(tags)]`.
+- **Saber si algo está** muchas veces dentro de un loop (`set.has` en vez de `array.includes`).
+- **Selección múltiple** en la UI: los ids de las filas seleccionadas en una tabla.
+- **Visitados** en un recorrido de grafo, para no procesar dos veces el mismo nodo.
+
+La igualdad es por **referencia** para objetos: dos objetos `{ id: 1 }` distintos son dos elementos. Por eso se guardan ids, no objetos.
+
+Desde 2024 los navegadores tienen métodos de conjuntos: `a.union(b)`, `a.intersection(b)`, `a.difference(b)`, `a.isSubsetOf(b)`.
+
+<Example title="filas seleccionadas y duplicados">
+
+```ts
+const selected = new Set<number>();
+selected.add(3);
+selected.add(3); // no hace nada
+selected.has(3); // true, O(1)
+
+const tags = ["react", "css", "react"];
+[...new Set(tags)]; // ["react", "css"]
+```
+
+<Run
+  label="Ejecutar"
+  run={(log) => {
+    const tags = ["react", "css", "react", "ts", "css"];
+    log("sin duplicados:", [...new Set(tags)]);
+    const selected = new Set([1, 2, 3]);
+    selected.add(3);
+    log("seleccionadas:", [...selected], "size:", selected.size);
+    const visible = new Set([2, 3, 4]);
+    log(
+      "seleccionadas y visibles:",
+      [...selected].filter((id) => visible.has(id)),
+    );
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A Set stores unique values with constant-time add, has and delete. I use it to remove duplicates,
+  to check membership inside loops instead of includes, and to track selected ids in a table.
+</SayIt>
+
+## ¿Qué es una pila (stack)?
+
+Una **pila** es **LIFO** (_Last In, First Out_): el último elemento que entra es el primero que sale, como una pila de platos. Operaciones, todas O(1):
+
+- `push(x)`: apilar arriba.
+- `pop()`: sacar el de arriba.
+- `peek()`: mirar el de arriba sin sacarlo.
+
+En JavaScript un array con `push` y `pop` **ya es una pila** eficiente.
+
+Dónde aparece:
+
+- El **call stack** de JavaScript: cada llamada a función se apila y se desapila al terminar. Un "Maximum call stack size exceeded" es una pila que se llenó por recursión infinita.
+- **Deshacer/rehacer** en un editor: cada acción se apila; deshacer hace `pop`.
+- **Validar anidamiento**: paréntesis balanceados, etiquetas HTML bien cerradas.
+- El **historial** del navegador (atrás).
+- **DFS** iterativo.
+
+<Example title="deshacer con una pila">
+
+```ts
+const history = new Stack<string>();
+history.push("escribir 'Hola'");
+history.push("poner en negrita");
+history.pop(); // deshace "poner en negrita"
+history.peek(); // "escribir 'Hola'"
+```
+
+<Run
+  label="Ejecutar"
+  run={(log) => {
+    const history = new Stack();
+    history.push("escribir 'Hola'");
+    history.push("poner en negrita");
+    history.push("cambiar color");
+    log("deshacer:", history.pop());
+    log("deshacer:", history.pop());
+    log("lo que queda arriba:", history.peek(), "· tamaño:", history.size);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A stack is last in, first out, with constant-time push and pop. A plain array works as one. It's
+  behind the call stack, undo and redo, browser history, and validating nested structures like
+  brackets.
+</SayIt>
+
+## ¿Qué es una cola (queue) y por qué no usar shift?
+
+Una **cola** es **FIFO** (_First In, First Out_): el primero que entra es el primero que sale, como la fila del supermercado. Operaciones:
+
+- `enqueue(x)`: agregar al final.
+- `dequeue()`: sacar del principio.
+
+El problema en JavaScript: la forma obvia es `push` + `shift`, pero **`shift` es O(n)**, porque mueve todos los elementos una posición. Con una cola grande, procesarla entera se vuelve O(n²).
+
+La solución de `data-structures.ts`: no mover nada. Se guarda un **índice de cabeza** (`head`) que avanza en cada `dequeue`; de vez en cuando se descarta la parte ya consumida. Así `dequeue` es O(1) (amortizado). Otras implementaciones usan una lista enlazada o un _ring buffer_.
+
+Dónde aparece: **BFS**, colas de tareas o de peticiones (limitar a 3 subidas simultáneas), la cola de eventos del **event loop**, colas de mensajes.
+
+<Example title="cola con índice de cabeza">
+
+```ts
+export class Queue<T> {
+  #items: T[] = [];
+  #head = 0;
+  enqueue(item: T) {
+    this.#items.push(item);
+  }
+  dequeue(): T | undefined {
+    if (this.#head >= this.#items.length) return undefined;
+    return this.#items[this.#head++]; // O(1): no mueve nada
+    // (la versión real compacta el array de vez en cuando)
+  }
+}
+```
+
+<Run
+  label="Vaciar 100 000 elementos: shift vs Queue"
+  run={(log) => {
+    const n = 100000;
+    const arr = Array.from({ length: n }, (_, i) => i);
+    let t = performance.now();
+    while (arr.length) arr.shift();
+    log(`array.shift: ${(performance.now() - t).toFixed(1)} ms`);
+    const q = new Queue();
+    for (let i = 0; i < n; i++) q.enqueue(i);
+    t = performance.now();
+    while (q.size) q.dequeue();
+    log(`Queue:       ${(performance.now() - t).toFixed(1)} ms`);
+  }}
+/>
+
+</Example>
+
+<Tip>
+  Los motores de JavaScript a veces optimizan `shift` en arrays pequeños, por eso con pocos
+  elementos no notas la diferencia. La complejidad importa cuando la cola crece.
+</Tip>
+
+<SayIt>
+  A queue is first in, first out. In JavaScript, shift is O(n) because it reindexes the whole array,
+  so for a real queue I keep a head index that moves forward on dequeue, which makes it constant
+  time. Queues are used for BFS, task scheduling and the event loop.
+</SayIt>
+
+## ¿Qué es una lista enlazada y cómo se invierte?
+
+Una **lista enlazada** es una cadena de **nodos**, donde cada nodo tiene un valor y una referencia al **siguiente** (`next`). La lista solo conoce el primero (`head`). No hay índices.
+
+| Operación                                | Lista enlazada                               | Array    |
+| ---------------------------------------- | -------------------------------------------- | -------- |
+| Insertar al inicio                       | **O(1)**: el nuevo nodo apunta al viejo head | O(n)     |
+| Acceder al elemento i                    | O(n): hay que caminar desde el head          | **O(1)** |
+| Buscar un valor                          | O(n)                                         | O(n)     |
+| Insertar en medio (si ya tienes el nodo) | **O(1)**                                     | O(n)     |
+
+En JavaScript casi nunca la necesitas (los arrays son muy rápidos), pero es una pregunta clásica porque prueba si sabes manejar **referencias**. El ejercicio típico: **invertirla en el lugar**. Se recorre con tres variables: `prev`, `current` y `next`; a cada nodo se le da vuelta la flecha para que apunte al anterior. O(n) de tiempo, O(1) de memoria.
+
+<Example title="reverse paso a paso">
+
+```ts
+reverse() {
+  let prev = null;
+  let current = this.head;
+  while (current) {
+    const next = current.next; // 1. guardar el siguiente
+    current.next = prev;       // 2. dar vuelta la flecha
+    prev = current;            // 3. avanzar prev
+    current = next;            //    y current
+  }
+  this.head = prev;            // el último nodo es el nuevo head
+}
+```
+
+<Run
+  label="Crear e invertir"
+  run={(log) => {
+    const list = new LinkedList();
+    [4, 3, 2, 1].forEach((n) => list.prepend(n));
+    log("lista:     ", list.toArray().join(" → "));
+    list.reverse();
+    log("invertida: ", list.toArray().join(" → "));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A linked list is a chain of nodes where each points to the next. Inserting at the head is constant
+  time, but accessing by position is linear. To reverse it in place, I walk it with prev, current
+  and next pointers, flipping each next pointer, which is O(n) time and O(1) space.
+</SayIt>
+
+## ¿Qué es un árbol y cómo se recorre (DFS y BFS)?
+
+Un **árbol** es una estructura jerárquica: un nodo **raíz**, y cada nodo tiene **hijos**, sin ciclos. En front end los árboles están en todas partes:
+
+- **El DOM**: `html` → `body` → `main` → …
+- El **árbol de componentes** de React.
+- Menús anidados, carpetas, comentarios con respuestas, organigramas, el JSON de una API.
+
+Hay dos formas de recorrer todos los nodos, ambas O(n):
+
+- **DFS** (_Depth-First Search_, en profundidad): baja por una rama hasta el fondo antes de pasar a la siguiente. Se implementa naturalmente con **recursión** (o con una pila). Sirve para renderizar un árbol anidado, calcular la profundidad, buscar en todo el subárbol.
+- **BFS** (_Breadth-First Search_, en anchura): visita por **niveles**: primero la raíz, luego todos sus hijos, luego todos los nietos. Se implementa con una **cola**. Sirve para encontrar el camino más corto o el nodo más cercano a la raíz.
+
+`document.querySelectorAll` devuelve los elementos en **orden del documento**, que es justamente el orden de un DFS (_preorden_: primero el padre, luego sus hijos).
+
+<Example title="recorrer un menú anidado">
+
+```ts
+const menu = {
+  name: "Inicio",
+  children: [
+    { name: "Proyectos", children: [{ name: "Planner" }, { name: "Reports" }] },
+    { name: "Ajustes", children: [{ name: "Perfil" }] },
+  ],
+};
+
+dfs(menu, (node, depth) => console.log("  ".repeat(depth) + node.name));
+bfs(menu); // por niveles
+```
+
+<Run
+  label="DFS y BFS"
+  run={(log) => {
+    const menu = {
+      name: "Inicio",
+      children: [
+        { name: "Proyectos", children: [{ name: "Planner" }, { name: "Reports" }] },
+        { name: "Ajustes", children: [{ name: "Perfil" }] },
+      ],
+    };
+    log("DFS (en profundidad):");
+    dfs(menu, (node, depth) => log("·  ".repeat(depth) + node.name));
+    log("BFS (por niveles):", bfs(menu).join(" → "));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A tree is hierarchical data with a root and children, like the DOM or a nested menu. DFS goes deep
+  down each branch first and is naturally recursive; BFS visits level by level using a queue, which
+  is what you want for the nearest match or shortest path. Both are O(n).
+</SayIt>
+
+## ¿Qué es una caché LRU y cómo se implementa?
+
+Una caché guarda resultados para no recalcularlos o no volver a pedirlos. Pero la memoria no es infinita: hay que **expulsar** algo cuando se llena. **LRU** (_Least Recently Used_) expulsa el elemento **usado hace más tiempo**, con la idea de que lo usado hace poco probablemente se vuelva a usar.
+
+Requisito de la pregunta de entrevista: `get` y `set` en **O(1)**.
+
+La implementación clásica combina un hash map con una lista doblemente enlazada. En JavaScript hay un atajo elegante: **`Map` recuerda el orden de inserción**.
+
+- `get(key)`: si existe, se **borra y se vuelve a insertar**, así pasa al final (el más reciente).
+- `set(key, value)`: se inserta al final; si se pasa de la capacidad, se borra **la primera clave** del Map (`map.keys().next().value`), que es la menos usada.
+
+Dónde aparece: caché de respuestas de una API con límite, de imágenes o de cálculos caros. Librerías como React Query usan ideas parecidas (expiran lo que no se usa).
+
+<Example title="LRU con un Map">
+
+```ts
+get(key: K) {
+  if (!this.#map.has(key)) return undefined;
+  const value = this.#map.get(key)!;
+  this.#map.delete(key);
+  this.#map.set(key, value); // ahora es el más reciente
+  return value;
+}
+
+set(key: K, value: V) {
+  this.#map.delete(key);
+  this.#map.set(key, value);
+  if (this.#map.size > this.capacity) {
+    this.#map.delete(this.#map.keys().next().value); // el más viejo
+  }
+}
+```
+
+<Run
+  label="Caché de capacidad 2"
+  run={(log) => {
+    const cache = new LRUCache(2);
+    cache.set("a", 1);
+    cache.set("b", 2);
+    log("después de set a, b:", cache.keys());
+    cache.get("a");
+    log("después de get a:   ", cache.keys(), "← b es el menos usado");
+    cache.set("c", 3);
+    log("después de set c:   ", cache.keys(), "← b fue expulsado");
+    log("get b:", cache.get("b") ?? "undefined");
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  An LRU cache evicts the least recently used entry when it's full, with get and set in constant
+  time. In JavaScript I use a Map, since it keeps insertion order: on get I delete and re-insert the
+  key to mark it as recent, and on set I evict the first key when I'm over capacity.
+</SayIt>

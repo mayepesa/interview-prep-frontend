@@ -1,0 +1,403 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  BatchingDemo,
+  Counter,
+  InitialStateFromProps,
+  LazyInitDemo,
+  MutationDemo,
+  RerenderDemo,
+  SnapshotDemo,
+  UpdaterDemo,
+} from "./state-and-props.examples";
+
+export const meta = {
+  title: "Estado, props y useState",
+  section: "react-basics",
+  order: 30,
+  summary:
+    "Qué es el estado, en qué se diferencia de las props, cómo funciona useState por dentro (snapshot, updater, batching) y por qué nunca se muta. Son las preguntas más frecuentes de React básico.",
+};
+
+## ¿Qué es el estado en React?
+
+El **estado** es la **memoria de un componente**: datos que cambian con el tiempo (por una acción del usuario, una respuesta de la API, un timer) y que afectan lo que se muestra. Un input con texto, un menú abierto o cerrado, la lista de tareas cargada.
+
+¿Por qué no basta con una variable normal (`let count = 0`)? Por dos razones:
+
+1. **Las variables locales no sobreviven entre renders.** Cada render vuelve a ejecutar la función desde cero, así que `count` volvería a `0`.
+2. **Cambiar una variable local no avisa a React.** React no sabe que tiene que volver a renderizar.
+
+`useState` resuelve ambas: React **guarda** el valor fuera de la función (asociado a la posición del componente en el árbol) y, cuando lo cambias con el setter, **programa un nuevo render**.
+
+El estado es **local y privado de cada instancia**: si renderizas dos `<Counter />`, cada uno tiene su propio contador.
+
+<Example title="dos instancias, dos estados independientes">
+
+```tsx
+function Counter({ label }: { label: string }) {
+  const [count, setCount] = useState(0);
+  return (
+    <button onClick={() => setCount(count + 1)}>
+      {label}: {count}
+    </button>
+  );
+}
+
+<Counter label="A" />
+<Counter label="B" />
+```
+
+<Live hint="cada botón cuenta por separado">
+  <div className="row">
+    <Counter label="A" />
+    <Counter label="B" />
+  </div>
+</Live>
+
+</Example>
+
+<SayIt>
+  State is a component's memory: data that changes over time and affects what's rendered. A normal
+  variable doesn't work because it resets on every render and changing it doesn't tell React to
+  re-render. useState keeps the value between renders and schedules a new render when it changes.
+</SayIt>
+
+## ¿Qué diferencia hay entre props y state?
+
+|                              | Props                                          | State                                          |
+| ---------------------------- | ---------------------------------------------- | ---------------------------------------------- |
+| De dónde viene               | Del **padre**                                  | Del **propio componente**                      |
+| ¿Quién lo cambia?            | Solo el padre                                  | El componente, con su setter                   |
+| ¿Se puede modificar adentro? | No, es de solo lectura                         | Sí, pero solo con `setX` (nunca mutándolo)     |
+| Analogía                     | Los argumentos de una función                  | Las variables internas que la función recuerda |
+| Al cambiar                   | El hijo se re-renderiza con los nuevos valores | El componente (y sus hijos) se re-renderizan   |
+
+Se complementan: el **estado de un padre** suele llegar a los hijos **como props**. Cuando el padre llama a `setHours`, se re-renderiza y le pasa el nuevo valor al hijo.
+
+Una pregunta útil para decidir: _¿este dato lo controla otro componente?_ → prop. _¿Cambia con el tiempo y nadie más lo controla?_ → estado. _¿Se puede calcular a partir de otros datos?_ → **ninguno de los dos**: es estado derivado, se calcula en el render.
+
+<SayIt>
+  Props come from the parent and are read-only for the child; state is owned by the component and
+  changes through its setter. Often one component's state becomes another component's props. If a
+  value can be computed from existing props or state, it shouldn't be state at all.
+</SayIt>
+
+## ¿Qué hace el hook useState?
+
+```tsx
+const [value, setValue] = useState(initialValue);
+```
+
+- Devuelve un array de dos elementos: el **valor actual** y una **función para cambiarlo** (se desestructura con el nombre que quieras; la convención es `[algo, setAlgo]`).
+- `initialValue` solo se usa en el **primer render**. En los siguientes se ignora.
+- Llamar a `setValue(nuevo)` **no cambia la variable en el render actual**: le pide a React un nuevo render en el que `value` valdrá `nuevo`.
+- Si el nuevo valor es igual al actual (según `Object.is`), React puede saltarse el render.
+- El setter es **estable**: es la misma función en todos los renders, así que no hace falta ponerlo en las dependencias de un efecto.
+
+### El estado es una foto (snapshot)
+
+Cada render tiene sus **propias** props y su propio estado, como una foto. Los handlers creados en ese render "ven" los valores de esa foto. Por eso, justo después de `setCount(count + 1)`, `count` sigue valiendo lo mismo dentro de ese handler.
+
+<Example title="setCount no cambia count en el render actual">
+
+```tsx
+const handleClick = () => {
+  setCount(count + 1);
+  console.log(count); // ¡el valor viejo! el nuevo llega en el próximo render
+};
+```
+
+<Live hint="haz clic y compara el número del botón con el mensaje">
+  <SnapshotDemo />
+</Live>
+
+</Example>
+
+<Pitfall title="Reglas de los hooks">
+  `useState` (y todo hook) se llama siempre en el **nivel superior** del componente y en el mismo
+  orden en cada render: nunca dentro de un `if`, un loop o una función anidada. React identifica
+  cada estado por el **orden** de las llamadas.
+</Pitfall>
+
+<SayIt>
+  useState returns the current value and a setter. Calling the setter doesn't change the variable
+  right away; it schedules a re-render, and in that next render the hook returns the new value. Each
+  render sees a snapshot of state, which is why logging right after setState shows the old value.
+</SayIt>
+
+## ¿Por qué usar una función para actualizar el estado?
+
+El setter acepta dos formas:
+
+- **Un valor**: `setCount(count + 1)` → "reemplaza el estado por este número".
+- **Una función actualizadora** (updater): `setCount((c) => c + 1)` → "toma el valor **más reciente** y calcúlame el siguiente".
+
+Como `count` es una foto del render, tres llamadas seguidas con `count + 1` calculan las tres `0 + 1`: el resultado es `1`. Con el updater, React encola las funciones y cada una recibe el resultado de la anterior: `0 → 1 → 2 → 3`.
+
+**Regla práctica**: si el nuevo estado **depende del anterior**, usa el updater. También evita bugs de _stale closures_ en callbacks que se ejecutan más tarde (timers, promesas, suscripciones).
+
+<Example title="tres actualizaciones seguidas">
+
+<Compare>
+<Bad>
+
+```tsx
+const addThree = () => {
+  setCount(count + 1); // 0 + 1
+  setCount(count + 1); // 0 + 1
+  setCount(count + 1); // 0 + 1 → resultado: 1
+};
+```
+
+</Bad>
+<Good>
+
+```tsx
+const addThree = () => {
+  setCount((c) => c + 1); // 0 → 1
+  setCount((c) => c + 1); // 1 → 2
+  setCount((c) => c + 1); // 2 → 3
+};
+```
+
+</Good>
+</Compare>
+
+<Live hint="prueba los dos botones de +3">
+  <UpdaterDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  When the next state depends on the previous one, I pass an updater function to the setter. React
+  queues the updates and gives each function the latest value, so three increments add three. With a
+  plain value, all three calls read the same stale snapshot.
+</SayIt>
+
+## ¿Qué es el batching de actualizaciones?
+
+**Batching** (agrupamiento) significa que React **junta varias actualizaciones de estado** que ocurren en el mismo evento y hace **un solo render** al final, en vez de uno por cada `setState`.
+
+- Evita renders intermedios innecesarios (más rendimiento).
+- Evita mostrar estados a medias (por ejemplo, `hours` actualizado pero `saved` todavía no).
+
+Desde **React 18**, con `createRoot`, el batching es **automático en todos lados**: event handlers, `setTimeout`, promesas, `fetch().then(...)`. En React 17 solo se agrupaba dentro de los event handlers de React.
+
+Si en un caso muy puntual necesitas que el DOM se actualice **inmediatamente** (por ejemplo, para hacer scroll al elemento recién agregado), existe `flushSync` de `react-dom`, pero es una salida de emergencia.
+
+<Example title="tres setState, un render">
+
+```tsx
+const updateAll = () => {
+  setHours((h) => h + 8);
+  setEntries((e) => e + 1);
+  setSaved(true);
+}; // → un solo render
+
+<button onClick={updateAll}>en el clic</button>
+<button onClick={() => setTimeout(updateAll, 0)}>en un setTimeout</button>
+```
+
+<Live hint="el contador de renders sube de 1 en 1, en los dos casos">
+  <BatchingDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  Batching means React groups multiple state updates from the same event into a single re-render.
+  Since React 18 it's automatic everywhere, including timeouts and promises. If I really need a
+  synchronous DOM update, I can use flushSync, but that's rare.
+</SayIt>
+
+## ¿Se puede inicializar un estado con el valor de una prop?
+
+Sí: `useState(initialName)` es válido. Pero hay que entender lo que pasa: **el estado solo toma el valor inicial una vez**, en el montaje. Si después la prop cambia, el estado **no** se actualiza: el componente sigue mostrando su copia vieja.
+
+Opciones según lo que quieres:
+
+1. **Si no necesitas editarlo**, no lo copies: lee la prop directamente. Copiar props al estado es una de las fuentes de bugs más comunes.
+2. **Si es una copia editable** (un formulario con valores iniciales), nómbrala así (`initialName`, `defaultValue`) para dejar claro que solo es el valor de partida.
+3. **Si quieres que se reinicie cuando cambie la prop**, usa el **truco de la key**: `<NameEditor key={user} initialName={user} />`. Al cambiar la `key`, React desmonta el componente y monta uno nuevo, que vuelve a leer la prop.
+
+Evita sincronizar con `useEffect(() => setName(initialName), [initialName])`: hace un render extra con el valor viejo y es más difícil de seguir.
+
+<Example title="sin key vs con key">
+
+```tsx
+function NameEditor({ initialName }: { initialName: string }) {
+  const [name, setName] = useState(initialName); // solo la primera vez
+  return <input value={name} onChange={(e) => setName(e.target.value)} />;
+}
+
+<NameEditor initialName={user} />            // ignora los cambios de user
+<NameEditor key={user} initialName={user} /> // se reinicia cuando user cambia
+```
+
+<Live hint="cambia el usuario y mira cuál de los inputs se actualiza">
+  <InitialStateFromProps />
+</Live>
+
+</Example>
+
+<SayIt>
+  Yes, but the prop is only used as the initial value; later changes are ignored. If I don't need to
+  edit it, I read the prop directly. If I need the state to reset when the prop changes, I pass that
+  prop as the key, so React remounts the component with fresh state.
+</SayIt>
+
+## ¿Por qué no se debe mutar el estado?
+
+Para decidir si algo cambió, React compara el valor anterior con el nuevo usando **`Object.is`**, que en objetos y arrays compara **referencias**, no contenido. Si haces `items.push(nuevo)` y luego `setItems(items)`, la referencia es la misma: `Object.is(prev, next)` es `true` y React **no re-renderiza**. Tus datos cambiaron, pero la pantalla no.
+
+Además, mutar rompe otras cosas:
+
+- `memo`, `useMemo` y las dependencias de `useEffect` también comparan referencias: no detectan el cambio.
+- El estado de renders anteriores (la "foto") se corrompe, lo que rompe features como transiciones o deshacer.
+
+La regla: **trata el estado como inmutable**. Para cambiarlo, crea un **objeto o array nuevo**:
+
+| Quiero…          | Evita (muta)                 | Usa (copia)                                               |
+| ---------------- | ---------------------------- | --------------------------------------------------------- |
+| Agregar          | `push`, `unshift`            | `[...arr, item]`, `[item, ...arr]`                        |
+| Quitar           | `splice`, `pop`              | `arr.filter((x) => x.id !== id)`                          |
+| Reemplazar       | `arr[i] = x`                 | `arr.map((x) => (x.id === id ? nuevo : x))`               |
+| Ordenar          | `sort`, `reverse`            | `toSorted()`, `toReversed()` (o `[...arr].sort()`)        |
+| Cambiar un campo | `obj.done = true`            | `{ ...obj, done: true }`                                  |
+| Objeto anidado   | `user.address.city = "Lima"` | `{ ...user, address: { ...user.address, city: "Lima" } }` |
+
+Cuando el estado está muy anidado, librerías como **Immer** te dejan escribir código "que parece mutar" y producen una copia inmutable por ti.
+
+<Example title="mutar vs copiar">
+
+<Compare>
+<Bad>
+
+```tsx
+const add = () => {
+  items.push({ id: 2, text: "Nuevo" });
+  setItems(items); // misma referencia → no re-render
+};
+```
+
+</Bad>
+<Good>
+
+```tsx
+const add = () => {
+  setItems((prev) => [...prev, { id: 2, text: "Nuevo" }]);
+  // array nuevo → React detecta el cambio
+};
+```
+
+</Good>
+</Compare>
+
+<Live hint="haz clic en push: no pasa nada. Luego en la copia: aparecen los dos">
+  <MutationDemo />
+</Live>
+
+</Example>
+
+Fíjate en el detalle: los elementos "mutados" **sí** estaban en el array; simplemente React no se enteró hasta que otro cambio provocó un render. Ese tipo de bug "aparece más tarde" y es difícil de rastrear.
+
+<SayIt>
+  React compares state with Object.is, which checks references for objects and arrays. If I mutate
+  the array and set the same reference, React thinks nothing changed and skips the render. So I
+  always create new objects or arrays with spread, map or filter, or use Immer for deeply nested
+  state.
+</SayIt>
+
+## ¿Qué es el lazy initial state?
+
+Si el valor inicial es **caro de calcular** (leer `localStorage`, parsear un JSON grande, construir una estructura), hay una trampa:
+
+```tsx
+const [draft, setDraft] = useState(loadDraft()); // loadDraft() corre en CADA render
+```
+
+Aunque React solo **usa** el resultado en el primer render, la expresión `loadDraft()` se **evalúa** en todos, porque es JavaScript normal: los argumentos se calculan antes de llamar a la función.
+
+La solución es pasar **la función** (sin llamarla): `useState(loadDraft)` o `useState(() => loadDraft(userId))`. React la llama **solo en el montaje**. A esto se le llama _lazy initialization_.
+
+<Example title="la función inicial, llamada vs pasada">
+
+<Compare>
+<Bad>
+
+```tsx
+const [draft, setDraft] = useState(loadDraft());
+```
+
+</Bad>
+<Good>
+
+```tsx
+const [draft, setDraft] = useState(() => loadDraft());
+// o: useState(loadDraft)
+```
+
+</Good>
+</Compare>
+
+<Live hint="escribe en cualquiera de los inputs y mira los contadores">
+  <LazyInitDemo />
+</Live>
+
+</Example>
+
+<Tip>
+  Para valores baratos (`useState(0)`, `useState("")`) no hace falta: el beneficio es solo cuando el cálculo es
+  costoso. Y como un estado puede ser una función, si quieres **guardar** una función en el estado tienes que
+  envolverla: `useState(() => myFn)`.
+</Tip>
+
+<SayIt>
+  If the initial value is expensive to compute, I pass a function to useState instead of calling it.
+  Otherwise the expression runs on every render even though React only uses the result once. With an
+  initializer function, React calls it only on mount.
+</SayIt>
+
+## ¿Qué provoca un re-render?
+
+Un componente se vuelve a renderizar cuando:
+
+1. **Cambia su propio estado** (`setState` con un valor distinto según `Object.is`).
+2. **Se re-renderiza su padre**. Por defecto, cuando un componente se renderiza, **todos sus hijos** también, reciban props nuevas o no.
+3. **Cambia un contexto** que el componente lee con `use(Context)` o `useContext`.
+
+Fíjate en lo que **no** está en la lista: "cambian sus props". Las props cambian _porque_ el padre se re-renderizó; el motor real es la regla 2.
+
+Re-renderizar **no** significa tocar el DOM: React vuelve a llamar a tu función, compara el resultado y, si no hay diferencias, no hace nada en el DOM. La mayoría de las veces esto es barato y no hace falta optimizarlo. Cuando sí lo es, hay herramientas (`memo`, `useMemo`, `useCallback`, mover el estado más abajo) que se ven en la página de [memoización](#03-react/02-intermediate/memoization).
+
+<Example title="el hijo se re-renderiza aunque no reciba props">
+
+```tsx
+function Child() {
+  return <p>Child</p>; // no recibe nada
+}
+
+function Parent() {
+  const [count, setCount] = useState(0);
+  return (
+    <>
+      <button onClick={() => setCount((c) => c + 1)}>{count}</button>
+      <Child /> {/* se renderiza otra vez en cada clic */}
+    </>
+  );
+}
+```
+
+<Live hint="haz clic: los dos contadores de render suben">
+  <RerenderDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  A component re-renders when its own state changes, when its parent re-renders, or when a context
+  it reads changes. Props changing is really a consequence of the parent re-rendering. A re-render
+  doesn't mean a DOM update; React only commits the differences, so I only optimize with memo when I
+  measure a real problem.
+</SayIt>

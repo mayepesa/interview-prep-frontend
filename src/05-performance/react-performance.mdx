@@ -1,0 +1,321 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../app/study";
+import {
+  ProfilerDemo,
+  ServerPagination,
+  StateColocated,
+  StateTooHigh,
+  VirtualizationDemo,
+} from "./react-performance.examples";
+
+export const meta = {
+  title: "Performance en React",
+  section: "performance",
+  order: 20,
+  summary:
+    "Cómo evitar re-renders innecesarios, cómo mostrar listas de miles de filas (virtualización, paginación y filtros en el servidor), cuándo usar transiciones y cómo medir con el Profiler.",
+};
+
+## ¿Cuándo se re-renderiza un componente y cuándo es un problema?
+
+Un componente se vuelve a renderizar cuando:
+
+1. **Cambia su estado** (`useState`, `useReducer`).
+2. **Se re-renderiza su padre** (aunque sus props no hayan cambiado).
+3. **Cambia un contexto** que lee con `useContext`.
+
+Renderizar significa que React **llama a la función** del componente y compara el resultado con el anterior; solo toca el DOM si algo cambió. Por eso un re-render casi nunca es un problema: es barato. Se vuelve un problema cuando el componente es **caro** (miles de filas, cálculos pesados, gráficos) y se renderiza **seguido** (en cada tecla, en cada scroll).
+
+Las herramientas, de la más simple a la más específica:
+
+1. **Colocar el estado** donde se usa.
+2. **Pasar componentes como `children`** para que no dependan del estado del padre.
+3. **Memoizar** (`memo`, `useMemo`, `useCallback`) cuando mediste que hace falta.
+4. **Hacer menos trabajo**: virtualizar, paginar, partir con transiciones.
+
+<SayIt>
+  A component re-renders when its state changes, its parent re-renders, or a context it reads
+  changes. Re-rendering is usually cheap; it only matters when an expensive component re-renders
+  often, like a big table on every keystroke. That's when I look at state placement, memoization or
+  virtualization.
+</SayIt>
+
+## ¿Qué es colocar el estado (state colocation)?
+
+**Colocar el estado** significa guardarlo **lo más abajo posible** en el árbol: en el componente que lo usa, o en el ancestro común más cercano de los que lo usan. Si el estado de un input vive en el componente de la página, cada tecla re-renderiza la página entera, incluidas partes que no tienen nada que ver.
+
+Es la optimización más efectiva y la que menos código agrega: no memoizas nada, solo mueves el `useState` a un componente más pequeño.
+
+Una variante es **pasar contenido como `children`**: si un componente con estado recibe el contenido caro como `children`, ese contenido lo creó el padre y no se vuelve a renderizar cuando cambia el estado del hijo.
+
+<Example title="el mismo input, en dos lugares">
+
+<Compare>
+<Bad>
+
+```tsx
+function Page() {
+  const [note, setNote] = useState("");
+  return (
+    <>
+      <input value={note} onChange={(e) => setNote(e.target.value)} />
+      <SlowList /> {/* se renderiza en cada tecla */}
+    </>
+  );
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function NoteInput() {
+  const [note, setNote] = useState("");
+  return <input value={note} onChange={(e) => setNote(e.target.value)} />;
+}
+
+function Page() {
+  return (
+    <>
+      <NoteInput />
+      <SlowList /> {/* no se entera */}
+    </>
+  );
+}
+```
+
+</Good>
+</Compare>
+
+<Live hint="escribe y mira el contador de SlowList: estado arriba">
+  <StateTooHigh />
+</Live>
+
+<Live hint="escribe aquí: estado colocado, SlowList no se re-renderiza">
+  <StateColocated />
+</Live>
+
+</Example>
+
+<SayIt>
+  The first thing I check is where the state lives. If a frequently changing value like an input
+  lives high in the tree, every keystroke re-renders everything below it. Moving that state down
+  into the component that uses it fixes the problem without any memoization.
+</SayIt>
+
+## ¿Cuándo usar memo, useMemo y useCallback?
+
+`React.memo` hace que un componente **se salte el render** si sus props son iguales a las anteriores (comparación superficial con `Object.is`). `useMemo` guarda un **valor calculado** y `useCallback` una **función**, para que sean la misma referencia entre renders y no rompan el `memo` de un hijo.
+
+Úsalos cuando el Profiler muestre un componente caro que se renderiza sin necesidad, por ejemplo cada fila de una tabla grande cuando cambia solo una. No los pongas "por las dudas": tienen costo de memoria y de comparación, y hacen el código más difícil de leer.
+
+La explicación completa, con contadores de render en vivo, está en [Memoización (React · Intermedio)](#03-react/02-intermediate/memoization). El **React Compiler** puede agregar esta memoización automáticamente en el build.
+
+<Example title="filas memoizadas en una tabla">
+
+```tsx
+const EntryRow = memo(function EntryRow({ entry, onEdit }: Props) {
+  return (
+    <tr>
+      <td>{entry.project}</td>
+      <td>{entry.hours}</td>
+      <td>
+        <button onClick={() => onEdit(entry.id)}>Editar</button>
+      </td>
+    </tr>
+  );
+});
+
+// en el padre: la función es estable, así memo funciona
+const onEdit = useCallback((id: number) => setEditing(id), []);
+```
+
+</Example>
+
+<SayIt>
+  memo skips re-rendering a component when its props are shallowly equal, and useMemo and
+  useCallback keep object and function props stable so memo can work. I use them where the Profiler
+  shows a real cost, like rows in a large table, not everywhere. The React Compiler can now add this
+  automatically.
+</SayIt>
+
+## ¿Qué problemas aparecen con listas de miles de filas?
+
+Mostrar 100 000 filas significa crear cientos de miles de **nodos del DOM**. Aunque React fuera instantáneo, el navegador no lo es:
+
+- **Primer render lento**: crear, calcular el layout y pintar todos esos nodos puede tardar segundos y congela la página (mal INP).
+- **Memoria**: cada nodo ocupa memoria; en un teléfono se nota.
+- **Scroll y cada actualización** son más lentos, porque cualquier cambio de estilo puede recalcular el layout de toda la lista.
+
+Las soluciones atacan el problema desde distintos lados:
+
+| Técnica                                | Idea                                                                          |
+| -------------------------------------- | ----------------------------------------------------------------------------- |
+| **Virtualización**                     | Pintar solo las filas visibles                                                |
+| **Paginación / infinite scroll**       | No traer todas las filas del servidor                                         |
+| **Filtrar y ordenar en el servidor**   | El cliente no procesa 100 000 registros                                       |
+| **Filas memoizadas con `key` estable** | Un cambio en una fila no re-renderiza las demás                               |
+| **`content-visibility: auto`** (CSS)   | El navegador se salta el layout y el pintado de lo que está fuera de pantalla |
+
+<SayIt>
+  Thousands of rows mean thousands of DOM nodes, so the first render, scrolling and memory all
+  suffer. I avoid loading everything by paginating on the server, and when the user really needs to
+  scroll through a long list, I virtualize it so only the visible rows exist in the DOM.
+</SayIt>
+
+## ¿Qué es la virtualización (windowing)?
+
+**Virtualizar** una lista es renderizar **solo las filas que se ven** (más unas pocas de margen, el _overscan_), aunque la lista tenga 100 000 elementos. Al hacer scroll, se calculan las nuevas filas visibles y se reemplazan. El DOM siempre tiene unas 20–30 filas.
+
+Cómo funciona, en tres piezas:
+
+1. Un **contenedor con scroll** de alto fijo (`height: 320px; overflow-y: auto`).
+2. Un **div interior tan alto como toda la lista** (`items.length × rowHeight`), para que la barra de scroll tenga el tamaño correcto.
+3. Las filas visibles con **`position: absolute`** y `top = index × rowHeight`. En cada `scroll`, con `scrollTop` se calcula qué índices se ven.
+
+```ts
+const start = Math.max(0, Math.floor(scrollTop / rowHeight) - overscan);
+const end = Math.min(total, Math.ceil((scrollTop + height) / rowHeight) + overscan);
+```
+
+En este repo está implementada a mano en `src/05-performance/VirtualList.tsx`, con tests. En producción se usa una librería: **TanStack Virtual** (`@tanstack/react-virtual`) o **react-window**, que también resuelven filas de alto variable, scroll horizontal y grids.
+
+Contras a tener en cuenta: el buscador del navegador (Ctrl+F) no encuentra filas que no están en el DOM, y la accesibilidad necesita cuidado (`aria-rowcount`, `aria-rowindex`).
+
+<Example title="100 000 filas virtualizadas contra una lista normal">
+
+```tsx
+<VirtualList
+  items={rows} // 100 000
+  rowHeight={32}
+  height={320}
+  renderRow={(row) => <RowView {...row} />}
+/>
+```
+
+<Live hint="compara el tiempo y los nodos; prueba hacer scroll en las tres">
+  <VirtualizationDemo />
+</Live>
+
+</Example>
+
+<Tip>
+  La versión sin virtualizar se limita a 20 000 filas: con 100 000 el navegador se congelaría varios
+  segundos. Esa diferencia es justamente el argumento.
+</Tip>
+
+<SayIt>
+  Virtualization renders only the rows in the viewport plus a small overscan. A tall inner element
+  keeps the scrollbar size right, and on scroll I compute which indexes are visible from scrollTop
+  and the row height. So a hundred thousand rows means about twenty DOM nodes. In production I'd use
+  TanStack Virtual.
+</SayIt>
+
+## ¿Paginación o filtrado en el servidor?
+
+La virtualización resuelve el DOM, pero si igual descargas 100 000 registros, pagas la red, el parseo del JSON y la memoria. Lo mejor es **no traer lo que no se va a mostrar**:
+
+- **Paginación**: el servidor devuelve una página (`?page=3&pageSize=20`) y el total. Simple y predecible.
+- **Paginación por cursor**: en lugar de un número de página, el servidor devuelve un `cursor` que apunta al siguiente bloque. Más estable cuando se insertan datos mientras navegas.
+- **Infinite scroll**: pedir la siguiente página al llegar al final (con `IntersectionObserver`). Se combina bien con virtualización.
+- **Filtrar, ordenar y buscar en el servidor**: con una base de datos indexada es mucho más rápido que en el navegador. Al cambiar el filtro se vuelve a la página 1, y conviene **debounce** en el input y **cancelar** la petición anterior.
+
+En una app real, **React Query** (`useQuery` con la página en la `queryKey`, o `useInfiniteQuery`) se encarga de la caché, la cancelación y de mostrar la página anterior mientras llega la nueva.
+
+<Example title="20 filas por página, filtro en el servidor">
+
+```tsx
+useEffect(() => {
+  const controller = new AbortController();
+  fetchEntries(query, page, 20, controller.signal).then(setData);
+  return () => controller.abort();
+}, [query, page]);
+
+// al cambiar el filtro, volver a la primera página
+onChange={(e) => { setQuery(e.target.value); setPage(0); }}
+```
+
+<Live hint="filtra por 'Usuario 12' y navega entre páginas">
+  <ServerPagination />
+</Live>
+
+</Example>
+
+<SayIt>
+  If the user doesn't need all the data at once, I don't load it: the server filters, sorts and
+  returns one page at a time, or I use infinite scroll with a cursor. React Query handles caching
+  and cancelling requests when the page or the filter changes.
+</SayIt>
+
+## ¿Cómo ayudan las transiciones (useTransition, useDeferredValue)?
+
+A veces el trabajo es caro y no se puede evitar, por ejemplo filtrar una lista grande en el cliente mientras el usuario escribe. Las **transiciones** de React 18+ marcan una actualización como **no urgente**: React actualiza primero lo urgente (el texto del input) y renderiza lo pesado en segundo plano, de forma **interrumpible**. Si llega otra tecla, abandona el render viejo y empieza con el nuevo.
+
+- `startTransition(() => setFilter(value))` o `const [isPending, startTransition] = useTransition()` cuando controlas el `set`.
+- `useDeferredValue(value)` cuando recibes el valor y quieres una versión "atrasada" para la parte cara.
+
+No hacen el render más rápido: hacen que la interfaz **siga respondiendo** mientras ocurre. Son un complemento, no un reemplazo de colocar el estado o virtualizar. Los detalles, con ejemplos en vivo, están en [Concurrencia (React · Experto)](#03-react/03-expert/concurrent).
+
+<Example title="filtro que no bloquea el input">
+
+```tsx
+const [query, setQuery] = useState("");
+const deferredQuery = useDeferredValue(query);
+
+<input value={query} onChange={(e) => setQuery(e.target.value)} />
+<ExpensiveTable filter={deferredQuery} /> {/* memo: se renderiza con el valor diferido */}
+```
+
+</Example>
+
+<SayIt>
+  Transitions mark an update as non-urgent, so React keeps the input responsive and renders the
+  expensive part in the background, interrupting it if new input arrives. They don't make rendering
+  faster, they keep the UI responsive while it happens.
+</SayIt>
+
+## ¿Cómo mides el rendimiento de React? El Profiler
+
+Antes de optimizar, hay que saber **qué** componente es lento y **por qué** se renderiza. Dos herramientas:
+
+**React DevTools → Profiler** (la que más se usa):
+
+1. Pulsa _Record_, haz la interacción lenta, pulsa _Stop_.
+2. El **flamegraph** muestra cada commit y cuánto tardó cada componente.
+3. Activa _"Record why each component rendered"_ en la configuración para ver la causa: cambió un prop, un estado, un hook o el padre.
+4. _"Highlight updates when components render"_ pinta un borde en lo que se re-renderiza, útil para detectar renders inesperados.
+
+**El componente `<Profiler>`**: mide un subárbol desde el código. Su callback `onRender` recibe el `id`, la `phase` (`mount` o `update`), `actualDuration` (lo que tardó este render) y `baseDuration` (lo que tardaría sin memoización). Sirve para métricas automáticas o tests de rendimiento. Ojo: **no mide en builds de producción** normales, solo en desarrollo o en el build especial de profiling.
+
+Para el panorama completo (red, layout, pintado, tareas largas) se usa la pestaña **Performance** de Chrome DevTools, que también muestra los _tracks_ de React en versiones recientes.
+
+<Example title="medir una tabla con Profiler">
+
+```tsx
+import { Profiler } from "react";
+
+function onRender(id: string, phase: string, actualDuration: number, baseDuration: number) {
+  console.log(`${id} ${phase}: ${actualDuration.toFixed(1)} ms`);
+}
+
+<Profiler id="EntriesTable" onRender={onRender}>
+  <EntriesTable rows={rows} />
+</Profiler>;
+```
+
+<Live hint="en npm run dev: pulsa el botón y mira la duración de cada render">
+  <ProfilerDemo />
+</Live>
+
+</Example>
+
+<Pitfall>
+  Mide siempre en un build de producción (o con el *profiling build*) antes de sacar conclusiones de
+  tiempos: el modo desarrollo de React es bastante más lento y, con StrictMode, renderiza dos veces.
+</Pitfall>
+
+<SayIt>
+  I use the React DevTools Profiler: I record the slow interaction, look at the flamegraph for the
+  expensive components, and enable "why did this render" to see the cause. For automated
+  measurements there's the Profiler component with its onRender callback, and the Performance panel
+  for the full picture.
+</SayIt>

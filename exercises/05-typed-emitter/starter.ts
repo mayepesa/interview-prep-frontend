@@ -1,3 +1,6 @@
+// ¿Empezaste este ejercicio? Cambia `false` por `true` y sus tests empezarán a correr.
+export const started = false;
+
 type Handler<T> = (payload: T) => void;
 
 export class Emitter<Events extends Record<string, unknown>> {

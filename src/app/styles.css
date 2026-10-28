@@ -310,3 +310,270 @@ pre {
     padding: 20px 16px 48px;
   }
 }
+
+/* ─── Páginas de teoría ─────────────────────────────────────────────────── */
+
+.page-header h1 {
+  margin: 4px 0 8px;
+  font-size: 2rem;
+  line-height: 1.2;
+}
+
+.summary {
+  color: var(--muted);
+  font-size: 1.05rem;
+  margin: 0 0 16px;
+}
+
+.toc {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 24px;
+}
+
+.toc ol {
+  margin: 0;
+  padding-left: 22px;
+}
+
+button.link {
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  color: var(--accent);
+  text-align: left;
+  cursor: pointer;
+}
+
+button.link:hover {
+  text-decoration: underline;
+}
+
+.block-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.prose {
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.prose h2 {
+  font-size: 1.45rem;
+  margin: 56px 0 12px;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  scroll-margin-top: 16px;
+}
+
+.prose h2:first-child {
+  margin-top: 8px;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.prose h3 {
+  font-size: 1.1rem;
+  margin: 28px 0 8px;
+}
+
+.prose p,
+.prose li {
+  max-width: 72ch;
+}
+
+.prose a {
+  color: var(--accent);
+}
+
+.prose :not(pre) > code {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.prose pre {
+  background: #0d1117;
+  color: #e6edf3;
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  line-height: 1.5;
+  margin: 12px 0;
+}
+
+.prose pre code.hljs {
+  background: transparent;
+  padding: 0;
+}
+
+.prose table {
+  border-collapse: collapse;
+  margin: 12px 0;
+  width: 100%;
+  font-size: 0.95rem;
+}
+
+.prose th,
+.prose td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.prose th {
+  background: var(--surface-2);
+}
+
+.example {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin: 20px 0;
+  background: var(--surface);
+}
+
+.example > pre:last-child {
+  margin-bottom: 0;
+}
+
+.live {
+  border: 1px dashed var(--accent);
+  border-radius: 8px;
+  padding: 14px;
+  margin-top: 12px;
+  background: var(--bg);
+}
+
+.live > .block-label {
+  color: var(--accent);
+}
+
+.callout {
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 16px 0;
+  border-left: 3px solid;
+  background: var(--surface);
+}
+
+.callout > strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.callout p {
+  margin: 4px 0;
+}
+
+.callout.pitfall {
+  border-color: var(--bad);
+}
+
+.callout.pitfall > strong {
+  color: var(--bad);
+}
+
+.callout.tip {
+  border-color: var(--good);
+}
+
+.callout.tip > strong {
+  color: var(--good);
+}
+
+.compare {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+}
+
+.compare-side {
+  border-top: 3px solid;
+  min-width: 0;
+}
+
+.compare-side.bad {
+  border-color: var(--bad);
+}
+
+.compare-side.good {
+  border-color: var(--good);
+}
+
+.compare-side.bad > .block-label {
+  color: var(--bad);
+}
+
+.compare-side.good > .block-label {
+  color: var(--good);
+}
+
+.compare-side pre {
+  margin-top: 0;
+}
+
+.prose .say-it {
+  margin: 20px 0 8px;
+}
+
+.console {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.85rem;
+  background: #0d1117;
+  color: #e6edf3;
+  border-radius: 6px;
+  padding: 10px 12px 10px 36px;
+  margin: 10px 0 0;
+  min-height: 2.5em;
+}
+
+.console .muted {
+  color: #8b949e;
+  list-style: none;
+  margin-left: -20px;
+}
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 56px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.pager a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.code-file {
+  margin: 16px 0;
+}
+
+.code-file figcaption {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.code-file .line-number {
+  display: inline-block;
+  width: 2.5em;
+  margin-right: 12px;
+  color: #6e7681;
+  text-align: right;
+  user-select: none;
+}

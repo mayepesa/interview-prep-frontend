@@ -1,0 +1,208 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { AsyncToBoundary, NotCaught, TwoWidgets } from "./error-boundaries.examples";
+
+export const meta = {
+  title: "Error Boundaries",
+  section: "react-intermediate",
+  order: 60,
+  summary:
+    "Qué es un Error Boundary, qué errores captura y cuáles no, por qué sigue siendo una clase, dónde ponerlos y cómo reportar a Sentry.",
+};
+
+## ¿Qué es un Error Boundary?
+
+Si un componente lanza un error mientras React lo renderiza, React no puede saber qué mostrar. Su decisión por defecto es drástica: **desmonta toda la aplicación** y deja la pantalla en blanco. Es preferible no mostrar nada a mostrar una UI corrupta.
+
+Un **Error Boundary** es un componente que envuelve una parte del árbol y funciona como un `try/catch` para el render: si algún descendiente lanza un error, el boundary muestra una **UI de respaldo** (_fallback_) en lugar de ese subárbol, y el resto de la app sigue funcionando.
+
+Un boundary se implementa con dos métodos de clase:
+
+| Método                                   | Cuándo corre                            | Para qué                                                                   |
+| ---------------------------------------- | --------------------------------------- | -------------------------------------------------------------------------- |
+| `static getDerivedStateFromError(error)` | Durante el render, al capturar el error | Devolver el estado que muestra el fallback                                 |
+| `componentDidCatch(error, info)`         | Después, en el commit                   | Efectos: reportar a Sentry, loguear. `info.componentStack` dice dónde pasó |
+
+<Example title="un Error Boundary mínimo">
+
+```tsx
+class ErrorBoundary extends Component<Props, { error: Error | null }> {
+  state = { error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }; // mostrar el fallback
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    Sentry.captureException(error, { extra: { componentStack: info.componentStack } });
+  }
+
+  reset = () => this.setState({ error: null });
+
+  render() {
+    return this.state.error
+      ? this.props.fallback(this.state.error, this.reset)
+      : this.props.children;
+  }
+}
+
+<ErrorBoundary fallback={(error, reset) => <ErrorCard error={error} onRetry={reset} />}>
+  <HoursChart />
+</ErrorBoundary>;
+```
+
+<Live hint="rompe un widget: el otro sigue funcionando; luego reintenta">
+  <TwoWidgets />
+</Live>
+
+</Example>
+
+<SayIt>
+  An error boundary catches errors thrown while rendering its children and shows a fallback instead
+  of letting React unmount the whole app. getDerivedStateFromError switches to the fallback and
+  componentDidCatch is where I report the error.
+</SayIt>
+
+## ¿Qué errores captura y cuáles no?
+
+Un boundary captura errores lanzados por sus **descendientes** durante:
+
+- el **render** (el cuerpo del componente),
+- los **métodos de ciclo de vida** y los **efectos** (`useEffect`, `useLayoutEffect`),
+- los constructores de clases hijas.
+
+**No** captura errores en:
+
+| Dónde                                                  | Por qué                                                                          | Qué hacer                                                            |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| **Event handlers** (`onClick`)                         | No ocurren durante el render; React no está "dentro" de tu código en ese momento | `try/catch` en el handler y mostrar el error con estado              |
+| **Código asíncrono** (`setTimeout`, promesas, `fetch`) | Se ejecuta más tarde, fuera del render                                           | `.catch()` / `try/catch` con `await`, o llevarlo al boundary (abajo) |
+| **SSR**                                                | En el servidor no hay boundaries del cliente                                     | Manejo de errores del framework                                      |
+| **El propio boundary**                                 | Un boundary no puede atraparse a sí mismo                                        | Lo atrapa el boundary de más arriba                                  |
+
+<Example title="errores que el boundary no ve">
+
+```tsx
+const onClick = () => {
+  try {
+    riskyThing();
+  } catch (error) {
+    setError(error); // lo manejas tú
+  }
+};
+
+fetchData().catch((error) => setError(error));
+```
+
+<Live hint="los dos errores se manejan con try/catch, no con el boundary">
+  <NotCaught />
+</Live>
+
+</Example>
+
+### Llevar un error asíncrono al boundary
+
+A veces quieres que un error de un `fetch` muestre el mismo fallback que un error de render. El truco: lanzar el error **dentro de un updater de `setState`**. El updater se ejecuta durante el render, y ahí el boundary sí lo ve. La librería `react-error-boundary` lo empaqueta como `useErrorBoundary().showBoundary(error)`.
+
+<Example title="setState que lanza">
+
+```tsx
+const [, setState] = useState(0);
+
+const save = async () => {
+  try {
+    await api.save();
+  } catch (error) {
+    setState(() => {
+      throw error;
+    }); // el boundary más cercano lo captura
+  }
+};
+```
+
+<Live>
+  <AsyncToBoundary />
+</Live>
+
+</Example>
+
+<SayIt>
+  Error boundaries only catch errors during rendering, lifecycle methods and effects. Errors in
+  event handlers and async code happen outside rendering, so I handle them with try/catch, or
+  rethrow them into the boundary with something like showBoundary from react-error-boundary.
+</SayIt>
+
+## ¿Por qué los Error Boundaries siguen siendo clases?
+
+Porque **no existe un hook equivalente** a `getDerivedStateFromError` ni a `componentDidCatch`. Un boundary necesita "envolver" el render de sus hijos y reaccionar cuando fallan, y React todavía no expone eso como hook. Es el **único caso** común en el que hoy se escribe una clase.
+
+En la práctica casi nadie la escribe: se usa la librería **`react-error-boundary`**, que trae la clase lista y una API cómoda:
+
+```tsx
+import { ErrorBoundary, useErrorBoundary } from "react-error-boundary";
+
+<ErrorBoundary
+  FallbackComponent={ErrorCard} // recibe { error, resetErrorBoundary }
+  onError={(error, info) => Sentry.captureException(error)}
+  resetKeys={[projectId]} // se resetea solo si cambia projectId
+>
+  <ProjectDetail id={projectId} />
+</ErrorBoundary>;
+
+function ProjectDetail() {
+  const { showBoundary } = useErrorBoundary(); // para errores async
+  // fetchProject().catch(showBoundary)
+}
+```
+
+<SayIt>
+  There's still no hook for getDerivedStateFromError or componentDidCatch, so error boundaries are
+  the one place where class components are still needed. In practice I use react-error-boundary,
+  which gives me the class plus resetKeys and a useErrorBoundary hook.
+</SayIt>
+
+## ¿Dónde poner los Error Boundaries?
+
+No hay un único lugar: es una decisión de **granularidad**. Una estrategia típica tiene niveles:
+
+1. **Uno en la raíz**: la última red de seguridad. Muestra "Algo salió mal, recarga la página" en vez de pantalla en blanco.
+2. **Uno por ruta o página**: un error en "Reportes" no rompe la navegación ni el header.
+3. **Uno por widget independiente**: gráficos, paneles de un dashboard, un editor de terceros. Si falla uno, los demás siguen.
+
+Regla: pon un boundary alrededor de cualquier parte que **pueda fallar sola** y cuya ausencia el usuario pueda **tolerar**. No envuelvas cada botón: demasiados boundaries muestran una UI llena de mensajes de error sueltos.
+
+<Tip title="Resetear">
+  Un fallback útil ofrece una salida: "Reintentar" (resetear el estado del boundary) o volver atrás.
+  Con `resetKeys` o cambiando la `key` del boundary, el subárbol se monta de nuevo cuando cambian
+  los datos.
+</Tip>
+
+<SayIt>
+  I usually have one boundary at the root as a last resort, one per route, and one around
+  independent widgets like charts, so a single failure only replaces that piece of the UI and the
+  user can retry.
+</SayIt>
+
+## ¿Cómo reportar errores a Sentry?
+
+Capturar el error sin enterarte no sirve: hay que **reportarlo** a una herramienta de monitoreo (Sentry, Datadog, Bugsnag) con contexto suficiente para reproducirlo.
+
+- En `componentDidCatch` (o el `onError` de `react-error-boundary`) llama a `Sentry.captureException(error)` con el `componentStack`.
+- Sentry trae su propio `Sentry.ErrorBoundary` que ya lo hace.
+- En **React 19**, `createRoot` acepta callbacks globales: `onCaughtError` (errores atrapados por un boundary), `onUncaughtError` (los que no atrapó nadie) y `onRecoverableError` (errores de los que React se recuperó solo, como algunos de hidratación). Un solo lugar para reportar todo.
+- Sube los **source maps** al build para ver el código original en vez del minificado.
+- Los errores de handlers y async no pasan por el boundary: Sentry los atrapa con su handler global (`window.onerror`, `unhandledrejection`), o los reportas tú en el `catch`.
+
+```tsx
+createRoot(document.getElementById("root")!, {
+  onCaughtError: (error, info) =>
+    Sentry.captureException(error, { extra: { stack: info.componentStack } }),
+  onUncaughtError: (error, info) =>
+    Sentry.captureException(error, { extra: { stack: info.componentStack } }),
+}).render(<App />);
+```
+
+<SayIt>
+  In componentDidCatch or the onError callback I send the error and component stack to Sentry. React
+  19 also lets me pass onCaughtError and onUncaughtError to createRoot, so I can report everything
+  from one place, and I upload source maps so the stack traces are readable.
+</SayIt>

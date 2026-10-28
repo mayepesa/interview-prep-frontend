@@ -1,0 +1,282 @@
+import { Example, Live, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { DebounceDemo, ProjectFinder, ToggleDemo } from "./custom-hooks.examples";
+
+export const meta = {
+  title: "Custom hooks",
+  section: "react-intermediate",
+  order: 10,
+  summary:
+    "Cómo extraer lógica con estado a un hook propio, por qué existen las reglas de los hooks y cómo testear un hook con renderHook.",
+};
+
+## ¿Qué es un custom hook y cómo se crea?
+
+Un **custom hook** es una función de JavaScript que:
+
+1. tiene un nombre que empieza con `use` (`useToggle`, `useDebouncedValue`),
+2. llama a otros hooks por dentro (`useState`, `useEffect`, u otros custom hooks),
+3. devuelve lo que el componente necesite: un valor, una tupla, un objeto.
+
+Sirve para **reutilizar lógica con estado**, no UI. Antes de los hooks esa lógica se compartía con HOCs o render props (ver la página de HOC); hoy basta con mover el código a una función.
+
+Lo importante: **cada componente que llama al hook obtiene su propio estado**. El hook comparte la _receta_, no los datos. Si quieres compartir los datos, necesitas Context o un store.
+
+<Example title="useToggle usado por dos componentes">
+
+```tsx
+function useToggle(initial = false) {
+  const [on, setOn] = useState(initial);
+  const toggle = () => setOn((v) => !v);
+  return [on, toggle] as const; // `as const` para que TS infiera una tupla
+}
+
+function Switch({ label }: { label: string }) {
+  const [on, toggle] = useToggle();
+  return (
+    <button onClick={toggle}>
+      {label}: {on ? "ON" : "OFF"}
+    </button>
+  );
+}
+```
+
+<Live hint="cambia uno: el otro no se entera">
+  <ToggleDemo />
+</Live>
+
+</Example>
+
+<Tip title="¿Tupla u objeto?">
+  Devuelve una **tupla** cuando son 2 valores y quien llama quiere renombrarlos (como `useState`). Devuelve un
+  **objeto** cuando son 3 o más, para que el orden no importe (`const { data, error, status } = useQuery()`).
+</Tip>
+
+<SayIt>
+  A custom hook is a function whose name starts with "use" and that calls other hooks. It lets me
+  reuse stateful logic between components. Each component that calls it gets its own independent
+  state.
+</SayIt>
+
+## Un hook real: useDebouncedValue
+
+Un buen custom hook esconde un detalle molesto detrás de una API simple. `useDebouncedValue` devuelve el valor solo cuando dejó de cambiar durante cierto tiempo: perfecto para no hacer una petición por cada tecla.
+
+Por dentro es un `useEffect` con un `setTimeout`, y el **cleanup** cancela el timer anterior en cada cambio. Así solo sobrevive el último.
+
+<Example title="hooks/useDebouncedValue.ts">
+
+```ts
+export function useDebouncedValue<T>(value: T, delayMs = 300): T {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer); // cada cambio cancela el timer anterior
+  }, [value, delayMs]);
+
+  return debounced;
+}
+```
+
+<Live hint="escribe rápido y luego detente medio segundo">
+  <DebounceDemo />
+</Live>
+
+</Example>
+
+## ¿Cuáles son las reglas de los hooks?
+
+Hay dos reglas, y el plugin `eslint-plugin-react-hooks` las verifica:
+
+1. **Llama a los hooks solo en el nivel superior** del componente o del hook. Nunca dentro de un `if`, un loop, un callback ni después de un `return` temprano.
+2. **Llama a los hooks solo desde componentes de React o desde otros hooks.** No desde funciones normales ni desde clases.
+
+(La excepción es `use`, que sí puede ir dentro de un `if`; ver la página de Context.)
+
+## ¿Por qué existen esas reglas?
+
+React **no sabe cómo se llama tu variable de estado**. Cuando escribes `useState("Ana")`, React guarda el valor en una lista asociada al componente, y lo identifica **por la posición**: "el primer hook", "el segundo hook", etc.
+
+En cada render React recorre esa lista en el mismo orden. Si un `if` hace que un hook se salte, todos los que vienen después leen el valor del hook equivocado.
+
+<Example title="un useState de juguete que guarda los valores por posición">
+
+```js
+let hooks = [];
+let index = 0;
+
+function useState(initial) {
+  const i = index++; // posición de este hook en la lista
+  if (!(i in hooks)) hooks[i] = initial;
+  return [hooks[i], (v) => (hooks[i] = v)];
+}
+
+function Profile(showExtra) {
+  index = 0; // cada render empieza desde el principio
+  const [name] = useState("Ana");
+  if (showExtra) useState("extra"); // ✗ hook condicional
+  const [age] = useState(30);
+  return { name, age };
+}
+```
+
+<Run
+  run={(log) => {
+    let hooks = [];
+    let index = 0;
+    function useState(initial) {
+      const i = index++;
+      if (!(i in hooks)) hooks[i] = initial;
+      return [hooks[i], (v) => (hooks[i] = v)];
+    }
+    function Profile(showExtra) {
+      index = 0;
+      const [name] = useState("Ana");
+      if (showExtra) useState("extra");
+      const [age] = useState(30);
+      return { name, age };
+    }
+    log("1er render (showExtra = true):", Profile(true));
+    log("2do render (showExtra = false):", Profile(false));
+    log("lista interna:", hooks);
+  }}
+/>
+
+</Example>
+
+En el segundo render, `age` vale `"extra"`: leyó la posición 1, que pertenecía al hook condicional. Eso es exactamente lo que pasaría en React.
+
+<Compare>
+<Bad>
+
+```tsx
+function Timesheet({ user }) {
+  if (!user) return null;
+  const [week, setWeek] = useState(1); // se salta si no hay user
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function Timesheet({ user }) {
+  const [week, setWeek] = useState(1);
+  if (!user) return null; // los returns tempranos van después
+}
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  Hooks must be called at the top level, in the same order on every render, and only from components
+  or other hooks. React stores hook state in a list and identifies each hook by its call order, so a
+  conditional hook would shift every hook after it.
+</SayIt>
+
+## ¿Cómo se testea un hook?
+
+Un hook no se puede llamar fuera de un componente, así que Testing Library ofrece **`renderHook`**: monta un componente de prueba invisible que llama a tu hook y te da `result.current` con lo último que devolvió.
+
+Las herramientas clave:
+
+| Herramienta                   | Para qué                                                                         |
+| ----------------------------- | -------------------------------------------------------------------------------- |
+| `renderHook(() => useX(...))` | Montar el hook. `result.current` es su valor actual.                             |
+| `rerender(newProps)`          | Volver a renderizar con otras props (con `initialProps`).                        |
+| `act(() => ...)`              | Envolver cualquier cosa que actualice estado (llamar al setter, avanzar timers). |
+| `vi.useFakeTimers()`          | Controlar el tiempo en hooks con `setTimeout` / `setInterval`.                   |
+| `waitFor(() => expect(...))`  | Esperar a que una promesa actualice el estado.                                   |
+
+<Example title="hooks/hooks.test.ts (fragmento real de este repo)">
+
+```ts
+describe("useDebouncedValue", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("only updates after the value stops changing", () => {
+    const { result, rerender } = renderHook(({ value }) => useDebouncedValue(value, 300), {
+      initialProps: { value: "a" },
+    });
+
+    rerender({ value: "ab" });
+    rerender({ value: "abc" });
+    act(() => vi.advanceTimersByTime(299));
+    expect(result.current).toBe("a"); // todavía no pasó el tiempo
+
+    act(() => vi.advanceTimersByTime(1));
+    expect(result.current).toBe("abc"); // solo llega el último valor
+  });
+});
+
+it("useAsync goes from loading to success", async () => {
+  const { result } = renderHook(() => useAsync(() => Promise.resolve(42), []));
+  expect(result.current.status).toBe("loading");
+  await waitFor(() => expect(result.current).toEqual({ status: "success", data: 42 }));
+});
+```
+
+</Example>
+
+<Tip title="¿Hook o componente?">
+  Si el hook es pequeño y solo lo usa un componente, a veces es más claro testear el **componente**
+  (lo que ve el usuario). `renderHook` brilla con hooks reutilizables que tienen lógica propia:
+  timers, cancelación, validación. La página de Testing profundiza en esto.
+</Tip>
+
+<SayIt>
+  I test hooks with renderHook from Testing Library. It mounts the hook in a tiny test component and
+  exposes result.current. I wrap updates in act, use fake timers for debounce logic, and waitFor for
+  async state.
+</SayIt>
+
+## Componer hooks: localStorage + debounce + async
+
+La gracia de los hooks es que **se componen**: un hook puede usar el resultado de otro como entrada. En este repo hay tres, cada uno con sus tests:
+
+- `useLocalStorage(key, initial, validate)`: un `useState` que persiste. Valida lo que lee porque el storage puede tener datos viejos o manipulados.
+- `useDebouncedValue(value, ms)`: espera a que el valor deje de cambiar.
+- `useAsync(fn, deps)`: ejecuta una función async, cancela la anterior con `AbortController` y devuelve un estado `loading | success | error`.
+
+<Example title="un buscador en tres líneas de lógica">
+
+```tsx
+function ProjectFinder() {
+  const [query, setQuery] = useLocalStorage("query", "", isString);
+  const debounced = useDebouncedValue(query, 400);
+  const state = useAsync((signal) => searchProjects(debounced, { signal }), [debounced]);
+
+  return (
+    <>
+      <input value={query} onChange={(e) => setQuery(e.target.value)} />
+      {state.status === "success" && (
+        <ul>
+          {state.data.map((p) => (
+            <li key={p}>{p}</li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+```
+
+<Live hint="escribe 'plan', mira los estados y luego recarga la página">
+  <ProjectFinder />
+</Live>
+
+</Example>
+
+<Pitfall title="Un hook no es un singleton">
+  Si dos componentes llaman a `useLocalStorage("query", …)`, cada uno tiene su propio `useState`:
+  cuando uno escribe, el otro **no** se actualiza (solo comparten lo que está guardado en el
+  storage). Para estado compartido de verdad usa Context o un store como Zustand.
+</Pitfall>
+
+<SayIt>
+  Hooks compose: one hook's output can be another hook's input. A persisted query, a debounced value
+  and an async request with cancellation combine into a search with very little code, and each piece
+  is tested on its own.
+</SayIt>

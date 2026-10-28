@@ -6,6 +6,9 @@ import type { SearchFn } from "./types";
 
 const { ProjectSearch } = (process.env.SOLUTIONS ? solution : starter) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
@@ -36,7 +39,7 @@ function controllableSearch() {
   return { search, calls };
 }
 
-describe("10 · debounced search", () => {
+suite("10 · debounced search", () => {
   it("does not search for empty input", async () => {
     const { search } = controllableSearch();
     render(<ProjectSearch search={search} />);

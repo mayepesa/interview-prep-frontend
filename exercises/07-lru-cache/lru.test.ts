@@ -4,7 +4,10 @@ import * as starter from "./starter";
 
 const { LRUCache } = (process.env.SOLUTIONS ? solution : starter) as typeof solution;
 
-describe("07 · LRU cache", () => {
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
+suite("07 · LRU cache", () => {
   it("stores and returns values", () => {
     const cache = new LRUCache<string, number>(2);
     cache.set("a", 1);

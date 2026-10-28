@@ -1,0 +1,621 @@
+import { Example, Run, SayIt, Pitfall, Tip, Compare, Bad, Good } from "../app/study";
+import { describe, parseEntries, isEntry } from "./types";
+
+export const meta = {
+  title: "Fundamentos de TypeScript",
+  section: "typescript",
+  order: 10,
+  summary:
+    "Por qué TypeScript, inferencia, type vs interface, uniones e intersecciones, literales, any/unknown/never, narrowing, type guards, uniones discriminadas con chequeo exhaustivo y las opciones strict del compilador.",
+};
+
+TypeScript no se ejecuta: el compilador **revisa los tipos y los borra**, y lo que corre en el navegador es JavaScript. Por eso en esta página casi todo es código con comentarios que muestran **el tipo inferido** o **el error del compilador**. Los botones de ejecutar aparecen solo cuando lo que importa es el comportamiento en runtime.
+
+## ¿Por qué TypeScript?
+
+TypeScript es JavaScript **con tipos estáticos**: describes la forma de tus datos y el compilador revisa, **antes de ejecutar**, que el código la respete.
+
+Qué te da:
+
+- **Errores en el editor, no en producción**: propiedades mal escritas, `undefined` que no esperabas, argumentos de más o de menos.
+- **Refactors seguros**: cambias el nombre de un campo y el compilador te marca todos los lugares que se rompieron.
+- **Documentación que no se desactualiza**: las props de un componente o la forma de una respuesta de la API quedan escritas en el código.
+- **Autocompletado** preciso.
+
+Qué **no** hace:
+
+- **No valida en runtime.** Los tipos desaparecen al compilar. Si la API devuelve algo distinto de lo que declaraste, TypeScript no se entera: hay que validar los datos externos (type guards, o librerías como Zod).
+- No mejora el rendimiento ni cambia lo que hace tu código.
+
+<Example title="un error que JavaScript deja pasar">
+
+```ts
+type Entry = { id: string; project: string; hours: number };
+
+function totalHours(entries: Entry[]) {
+  return entries.reduce((sum, e) => sum + e.hour, 0);
+  //                                         ~~~~
+  // Error: Property 'hour' does not exist on type 'Entry'. Did you mean 'hours'?
+}
+```
+
+<Run
+  run={(log) => {
+    const entries = [
+      { id: "1", project: "Planner", hours: 3 },
+      { id: "2", project: "Reports", hours: 5 },
+    ];
+    const totalHours = (list) => list.reduce((sum, e) => sum + e.hour, 0);
+    log("en JavaScript el typo no avisa, solo da →", String(totalHours(entries)));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  TypeScript adds static types to JavaScript, so a whole class of bugs like typos, wrong arguments
+  or unexpected undefined values is caught in the editor instead of in production. It also makes
+  refactoring safe. But types are erased at compile time, so data from outside still has to be
+  validated at runtime.
+</SayIt>
+
+## Inferencia de tipos
+
+No hace falta anotar todo: TypeScript **infiere** el tipo a partir del valor. Regla práctica de los equipos con buen TypeScript:
+
+- **Anota** los **parámetros** de funciones (no se pueden inferir), las **props** y los **límites públicos** (lo que exporta un módulo, el tipo de retorno de funciones importantes).
+- **Deja inferir** las variables locales y los retornos simples. Anotar de más es ruido y a veces **empeora** el tipo (`const status: string = "draft"` pierde el literal).
+
+Detalles de la inferencia:
+
+- `const` infiere el **literal** (`"draft"`); `let` lo **ensancha** (_widening_) a `string`, porque podría cambiar.
+- Los arrays se infieren como la unión de sus elementos: `[1, "a"]` es `(string | number)[]`.
+- En callbacks, el tipo del parámetro se infiere **del contexto** (`entries.map((e) => …)`: `e` ya es `Entry`).
+
+<Example title="lo que TypeScript infiere solo">
+
+```ts
+let count = 0; // number
+const status = "draft"; // "draft" (literal)
+let mutableStatus = "draft"; // string (widening)
+const mixed = [1, "a"]; // (string | number)[]
+const user = { name: "Ana", admin: false }; // { name: string; admin: boolean }
+
+const hours = entries.map((e) => e.hours); // number[]: e se infiere como Entry
+
+function double(n: number) {
+  // el parámetro sí se anota
+  return n * 2; // retorno inferido: number
+}
+```
+
+</Example>
+
+<Tip title="¿Cómo veo el tipo inferido?">
+  Pasa el mouse sobre la variable en VS Code. Es la forma más rápida de aprender TypeScript: escribe
+  código normal y mira qué infiere.
+</Tip>
+
+<SayIt>
+  TypeScript infers types from values, so I annotate function parameters, props and public APIs, and
+  let it infer local variables and simple return types. const keeps literal types while let widens
+  them, and callback parameters are inferred from context.
+</SayIt>
+
+## type vs interface
+
+Los dos describen la forma de un objeto y en la mayoría de los casos son **intercambiables**. Diferencias reales:
+
+|                                                                           | `interface` | `type`                  |
+| ------------------------------------------------------------------------- | ----------- | ----------------------- |
+| Describir objetos                                                         | sí          | sí                      |
+| Uniones (`A \| B`), tuplas, primitivos, tipos derivados                   | **no**      | sí                      |
+| Extender                                                                  | `extends`   | intersección `&`        |
+| _Declaration merging_ (dos declaraciones con el mismo nombre se fusionan) | **sí**      | no (error de duplicado) |
+| Mapped / conditional types                                                | no          | sí                      |
+
+- El **merging** sirve para ampliar tipos de librerías o globales (por ejemplo, agregar campos al tema de styled-components o a `Window`). Fuera de eso, suele ser una sorpresa no deseada.
+- `extends` de interfaces da errores más claros cuando hay conflictos, y el compilador las cachea un poco mejor en jerarquías grandes.
+
+Una convención común y razonable: **`type` por defecto** (porque sirve para todo), **`interface`** cuando necesitas merging o para contratos públicos que otros extienden. Lo importante es ser **consistente** en el equipo.
+
+<Example title="lo mismo con los dos, y lo que solo uno puede">
+
+```ts
+interface UserI {
+  id: string;
+  name: string;
+}
+interface AdminI extends UserI {
+  permissions: string[];
+}
+
+type UserT = { id: string; name: string };
+type AdminT = UserT & { permissions: string[] };
+
+// solo type: uniones y tipos derivados
+type Status = "draft" | "submitted" | "approved";
+type Pair = [string, number];
+type UserKeys = keyof UserT; // "id" | "name"
+
+// solo interface: declaration merging (en un módulo, dentro de declare global)
+declare global {
+  interface Window {
+    analytics?: { track(event: string): void };
+  }
+}
+window.analytics?.track("page_view"); // ahora existe en el tipo de window
+```
+
+</Example>
+
+<SayIt>
+  For object shapes they're mostly interchangeable. type can also express unions, tuples and derived
+  types, while interfaces support declaration merging, which is useful to extend library or global
+  types. I default to type and use interface when I need merging, and above all I stay consistent
+  with the team.
+</SayIt>
+
+## Uniones e intersecciones
+
+- **Unión `A | B`**: el valor es **uno u otro**. Solo puedes usar directamente lo que tienen **en común**; para lo demás tienes que hacer narrowing (más abajo). `string | null`, `"sm" | "md" | "lg"`.
+- **Intersección `A & B`**: el valor es **ambos a la vez**; tiene todas las propiedades de los dos. Sirve para combinar tipos: `ButtonProps & { variant: "primary" }`.
+
+Una forma de recordarlo: piensa en **conjuntos de valores**. La unión agranda el conjunto de valores posibles (y por eso sabes menos de cada uno). La intersección lo achica (y sabes más).
+
+<Example title="lo que puedes usar en cada caso">
+
+```ts
+type Id = string | number;
+
+function format(id: Id) {
+  id.toUpperCase();
+  // ~~~~~~~~~~~ Error: Property 'toUpperCase' does not exist on type 'number'.
+  return String(id); // ok: sirve para los dos
+}
+
+type WithTimestamps = { createdAt: Date; updatedAt: Date };
+type Project = { id: string; name: string };
+type StoredProject = Project & WithTimestamps;
+// { id: string; name: string; createdAt: Date; updatedAt: Date }
+
+type Impossible = string & number; // never: ningún valor es las dos cosas
+```
+
+</Example>
+
+<SayIt>
+  A union means the value is one of several types, so I can only use what they have in common until
+  I narrow it. An intersection combines types, so the value has all their properties. I use unions
+  for states and options, and intersections to compose props.
+</SayIt>
+
+## Literal types
+
+Un **literal type** es un tipo que admite **un solo valor exacto**: `"draft"`, `42`, `true`. Combinados en uniones reemplazan a los `enum` y a los strings "mágicos":
+
+```ts
+type Size = "sm" | "md" | "lg";
+```
+
+Ventajas: autocompletado, error si alguien escribe `"medium"`, y son la base de las **uniones discriminadas**.
+
+Sobre los `enum` de TypeScript: generan código JavaScript real (no se borran), los numéricos tienen comportamientos poco intuitivos (mapeo inverso, valores implícitos) y no funcionan con la opción `erasableSyntaxOnly` que se usa para ejecutar TS directamente (Node, bundlers modernos). Hoy se prefiere **unión de literales** o un **objeto `as const`** (ver la página de generics).
+
+<Example title="literales en vez de strings sueltos">
+
+```ts
+type Size = "sm" | "md" | "lg";
+
+function Avatar({ size }: { size: Size }) { /* … */ }
+
+<Avatar size="md" />      // ok
+<Avatar size="medium" />  // Error: Type '"medium"' is not assignable to type 'Size'.
+
+let s = "sm";             // string (widening)
+const t = "sm";           // "sm"
+const size: Size = s;     // Error: Type 'string' is not assignable to type 'Size'.
+```
+
+</Example>
+
+<SayIt>
+  A literal type allows one exact value, and a union of literals gives you a closed set of options
+  with autocomplete and compile errors for typos. I prefer them, or an as-const object, over
+  TypeScript enums, which generate runtime code.
+</SayIt>
+
+## any vs unknown vs never
+
+| Tipo      | Qué significa                                 | Qué puedes hacer con él                                                                                 |
+| --------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `any`     | "no revises nada"                             | **todo**, sin errores. Apaga el compilador y se **contagia**: lo que sale de un `any` también es `any`. |
+| `unknown` | "puede ser cualquier cosa, todavía no sé qué" | **nada** hasta que lo verifiques (narrowing o type guard). Es el `any` seguro.                          |
+| `never`   | "esto no puede pasar"                         | es el conjunto vacío: ningún valor lo cumple.                                                           |
+
+Cuándo aparece cada uno:
+
+- **`unknown`**: todo lo que entra de afuera: `JSON.parse`, respuestas de API, `localStorage`, el `error` de un `catch` (con `strict`, es `unknown`).
+- **`never`**: el retorno de una función que siempre lanza o nunca termina, la rama imposible de un `switch` exhaustivo, una intersección imposible.
+- **`any`**: evítalo. Si de verdad lo necesitas (migrando JS viejo), déjalo comentado y localizado. `noImplicitAny` (parte de `strict`) evita los `any` accidentales.
+
+<Example title="any lo deja pasar todo, unknown obliga a verificar">
+
+```ts
+const a: any = JSON.parse('{"name":"Ana"}');
+a.name.toUpperCase(); // compila
+a.nmae.toUpperCase(); // también compila… y explota en runtime
+
+const u: unknown = JSON.parse('{"name":"Ana"}');
+u.name; // Error: 'u' is of type 'unknown'.
+if (typeof u === "object" && u !== null && "name" in u && typeof u.name === "string") {
+  u.name.toUpperCase(); // ok: verificado
+}
+
+function fail(message: string): never {
+  throw new Error(message);
+}
+
+try {
+  /* … */
+} catch (error) {
+  error.message; // Error: 'error' is of type 'unknown'.
+  if (error instanceof Error) console.log(error.message); // ok
+}
+```
+
+<Run
+  run={(log) => {
+    const a = JSON.parse('{"name":"Ana"}');
+    try {
+      a.nmae.toUpperCase();
+    } catch (e) {
+      log("con any compiló, pero en runtime →", `${e.name}: ${e.message}`);
+    }
+    try {
+      throw "un string, no un Error";
+    } catch (error) {
+      log(
+        "lo atrapado puede ser cualquier cosa →",
+        typeof error,
+        "· instanceof Error:",
+        error instanceof Error,
+      );
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  any turns off type checking and spreads through the code. unknown also accepts anything, but
+  forces me to check the value before using it, so I use it for external data like API responses or
+  caught errors. never is the empty type: functions that always throw, or the impossible branch of
+  an exhaustive switch.
+</SayIt>
+
+## Narrowing: cómo TypeScript "angosta" un tipo
+
+**Narrowing** es cuando TypeScript **reduce** un tipo amplio (una unión, `unknown`) a uno más específico dentro de un bloque, porque **entiende tus `if`**. El análisis se llama _control flow analysis_. Las formas:
+
+| Chequeo                 | Ejemplo                       | Angosta…                                                                                   |
+| ----------------------- | ----------------------------- | ------------------------------------------------------------------------------------------ |
+| `typeof`                | `typeof x === "string"`       | primitivos (`"string"`, `"number"`, `"boolean"`, `"function"`, `"object"`, `"undefined"`…) |
+| Truthiness              | `if (user)`                   | quita `null`, `undefined` (ojo: también `0` y `""`)                                        |
+| Igualdad                | `x === null`, `x === "draft"` | literales y `null`                                                                         |
+| `in`                    | `"error" in result`           | uniones de objetos por la presencia de una propiedad                                       |
+| `instanceof`            | `error instanceof HttpError`  | clases (`Date`, `Error`, las tuyas)                                                        |
+| `Array.isArray`         | `Array.isArray(x)`            | arrays                                                                                     |
+| Return / throw temprano | `if (!user) return;`          | el resto de la función ya sabe que hay `user`                                              |
+
+<Example title="cada forma de narrowing">
+
+```ts
+function label(value: string | number | Date | null) {
+  if (value === null) return "—"; // igualdad
+  if (typeof value === "string") return value.trim(); // value: string
+  if (typeof value === "number") return value.toFixed(1); // value: number
+  return value.toLocaleDateString(); // value: Date (lo único que queda)
+}
+
+type Ok = { data: string[] };
+type Fail = { error: string };
+
+function render(result: Ok | Fail) {
+  if ("error" in result) return `Error: ${result.error}`; // result: Fail
+  return result.data.join(", "); // result: Ok
+}
+```
+
+<Run
+  run={(log) => {
+    function label(value) {
+      if (value === null) return "—";
+      if (typeof value === "string") return value.trim();
+      if (typeof value === "number") return value.toFixed(1);
+      return value.toLocaleDateString("es");
+    }
+    for (const v of [null, "  Planner  ", 3.14159, new Date(2026, 0, 15)]) log(label(v));
+    const render = (result) =>
+      "error" in result ? `Error: ${result.error}` : result.data.join(", ");
+    log(render({ data: ["a", "b"] }), "·", render({ error: "500" }));
+  }}
+/>
+
+</Example>
+
+<Pitfall title="Truthiness con números y strings">
+  `if (hours)` descarta `0`, que puede ser un valor válido. Para quitar solo `null`/`undefined` usa
+  `if (hours != null)` o `hours !== undefined`.
+</Pitfall>
+
+<SayIt>
+  Narrowing is TypeScript following my control flow: after a typeof, instanceof, in, equality check
+  or an early return, it knows the more specific type inside that branch. That's how I safely work
+  with unions and unknown values.
+</SayIt>
+
+## Type guards: funciones con `value is T`
+
+Cuando el chequeo es largo o se repite, lo pones en una función que devuelve **`value is T`** (un _type predicate_). Si la función devuelve `true`, TypeScript angosta el valor a `T` en quien la llama. Sirve también con `filter`: `list.filter(isEntry)` da `Entry[]`.
+
+Dos advertencias importantes:
+
+- TypeScript **confía en ti**: no revisa que el cuerpo realmente compruebe lo que dice el predicado. Un guard mal escrito miente.
+- Desde TypeScript 5.5, funciones simples como `(x) => x !== null` **infieren** el predicado solas, así que `list.filter((x) => x !== null)` ya devuelve un array sin `null`.
+
+Para validar respuestas de APIs grandes, escribir guards a mano se vuelve tedioso: en proyectos reales se usa **Zod** (o Valibot), que valida en runtime y genera el tipo a la vez.
+
+<Example title="isEntry filtra datos que vienen como unknown (en types.ts, con tests)">
+
+```ts
+export function isEntry(value: unknown): value is Entry {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    "project" in value &&
+    typeof value.project === "string" &&
+    "hours" in value &&
+    typeof value.hours === "number"
+  );
+}
+
+export function parseEntries(json: string): Entry[] {
+  const data: unknown = JSON.parse(json); // unknown, nunca any
+  if (!Array.isArray(data)) return [];
+  return data.filter(isEntry); // Entry[]
+}
+```
+
+<Run
+  run={(log) => {
+    const json = JSON.stringify([
+      { id: "a", project: "Planner", hours: 2 },
+      { id: 1, project: "Planner", hours: 2 },
+      null,
+      "texto",
+      { id: "b", project: "Reports", hours: "5" },
+      { id: "c", project: "Reports", hours: 5 },
+    ]);
+    log("entrada:", json);
+    log("isEntry(null) →", isEntry(null), "· isEntry({ id: 'x' }) →", isEntry({ id: "x" }));
+    log("parseEntries →", parseEntries(json));
+    log("no es un array →", parseEntries('{"id":"a"}'));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A type guard is a function returning value is T; when it returns true, TypeScript narrows the
+  value. I use them to validate unknown data, for example filtering an API response. TypeScript
+  trusts the guard, so for larger schemas I'd use Zod, which validates at runtime and infers the
+  type.
+</SayIt>
+
+## Uniones discriminadas y el chequeo exhaustivo con never
+
+Una **unión discriminada** es una unión de objetos que comparten un campo **literal** (el _discriminante_, normalmente `status`, `type` o `kind`) con un valor distinto en cada caso. Al revisar ese campo, TypeScript sabe **exactamente** qué otras propiedades existen.
+
+Por qué es tan valorada:
+
+- **Hace imposibles los estados imposibles.** Con `{ loading: boolean; data?: T; error?: string }` puedes tener `loading: true` y `error` a la vez. Con una unión discriminada, no: cada estado tiene solo sus campos.
+- **Chequeo exhaustivo**: en el `default` de un `switch` pasas el valor a una función que recibe `never`. Si todos los casos están cubiertos, ahí el valor es `never` y compila. Si alguien agrega un caso nuevo (`"cancelled"`) y no lo maneja, el valor ya no es `never` y **el código deja de compilar** justo donde falta.
+
+Se usa para estados de peticiones, acciones de un `useReducer`, eventos y props que dependen entre sí.
+
+<Example title="RequestState con exhaustividad (en types.ts, con tests)">
+
+```ts
+type RequestState<T> =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "success"; data: T }
+  | { status: "error"; error: string };
+
+function describe<T>(state: RequestState<T>): string {
+  switch (state.status) {
+    case "idle":
+      return "Sin empezar";
+    case "loading":
+      return "Cargando…";
+    case "success":
+      return `Listo (${JSON.stringify(state.data)})`; // aquí existe data
+    case "error":
+      return `Error: ${state.error}`; // aquí existe error
+    default:
+      return assertNever(state); // state: never
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Caso no manejado: ${JSON.stringify(value)}`);
+}
+
+// si agregas | { status: "cancelled" } y no lo manejas:
+// Error: Argument of type '{ status: "cancelled"; }' is not assignable to parameter of type 'never'.
+
+const broken: RequestState<number> = { status: "success" };
+// Error: Property 'data' is missing in type '{ status: "success"; }'
+```
+
+<Run
+  run={(log) => {
+    const states = [
+      { status: "idle" },
+      { status: "loading" },
+      { status: "success", data: [3, 5] },
+      { status: "error", error: "500" },
+    ];
+    states.forEach((s) => log(s.status, "→", describe(s)));
+    try {
+      describe({ status: "cancelled" });
+    } catch (e) {
+      log("un caso que el tipo no permite, en runtime →", e.message);
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A discriminated union is a union of object types that share a literal field, like status. Checking
+  that field narrows to the exact case, so loading, success and error can't be mixed. With an
+  assertNever in the default branch, adding a new case breaks the build until every switch handles
+  it.
+</SayIt>
+
+## Propiedades opcionales y readonly
+
+- **`prop?: T`**: la propiedad puede **no estar**. Su tipo al leerla es `T | undefined`, así que el compilador te obliga a manejar el caso.
+- **`prop: T | undefined`** es distinto: la propiedad **debe estar**, aunque valga `undefined`. Con la opción `exactOptionalPropertyTypes` TypeScript distingue los dos casos; sin ella son casi equivalentes.
+- **`readonly prop: T`**: no se puede reasignar. `readonly T[]` (o `ReadonlyArray<T>`) no tiene `push`, `splice`, `sort`… Útil para props y estado que no debes mutar.
+- `readonly` es **solo de compilación** y **superficial**: no congela nada en runtime (para eso `Object.freeze`), y no protege objetos anidados.
+
+<Example title="opcional y readonly">
+
+```ts
+type Project = {
+  readonly id: string;
+  name: string;
+  description?: string; // puede no estar
+};
+
+function preview(p: Project) {
+  p.description.slice(0, 20);
+  // ~~~~~~~~~~~ Error: 'p.description' is possibly 'undefined'.
+  return p.description?.slice(0, 20) ?? "Sin descripción"; // ok
+
+  p.id = "otro";
+  // ~~ Error: Cannot assign to 'id' because it is a read-only property.
+}
+
+function total(hours: readonly number[]) {
+  hours.push(1);
+  //    ~~~~ Error: Property 'push' does not exist on type 'readonly number[]'.
+  return hours.reduce((a, b) => a + b, 0); // leer sí se puede
+}
+```
+
+</Example>
+
+<SayIt>
+  An optional property may be missing, so reading it gives T or undefined and I have to handle that.
+  readonly prevents reassignment and readonly arrays have no mutating methods, but it's compile-time
+  only and shallow, it doesn't freeze anything at runtime.
+</SayIt>
+
+## Aserciones: `as` y el operador `!`
+
+- **`value as T`** (_type assertion_) le dice al compilador "confía en mí, esto es `T`". **No convierte ni valida nada** en runtime. Solo se permite si los tipos se solapan; `as unknown as T` fuerza cualquier cosa (señal de alarma en un code review).
+- **`value!`** (_non-null assertion_) quita `null` y `undefined` del tipo. Si te equivocas, explota en runtime igual que en JavaScript.
+
+Son válidos cuando **sabes algo que el compilador no puede saber** (por ejemplo, `document.getElementById("root")!` en `main.tsx`), pero cada uno es un lugar donde el tipo puede mentir. Antes de usarlos, prueba con narrowing, un type guard o mejorando los tipos.
+
+<Example title="as no valida nada">
+
+```ts
+type User = { name: string };
+
+const user = JSON.parse('{"nombre":"Ana"}') as User; // compila
+user.name.toUpperCase(); // TypeError en runtime: name es undefined
+
+const root = document.getElementById("root")!; // HTMLElement (confías en que existe)
+
+const input = document.querySelector("#email") as HTMLInputElement; // ok si es un input de verdad
+```
+
+<Run
+  run={(log) => {
+    const user = JSON.parse('{"nombre":"Ana"}');
+    try {
+      user.name.toUpperCase();
+    } catch (e) {
+      log("el as no protegió nada →", `${e.name}: ${e.message}`);
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  An as assertion or a non-null bang only silences the compiler; they don't check anything at
+  runtime. I use them only when I truly know more than the compiler, like the root element in
+  main.tsx, and prefer narrowing or type guards everywhere else.
+</SayIt>
+
+## strict y noUncheckedIndexedAccess
+
+Las opciones del `tsconfig.json` cambian cuánto te protege TypeScript. Las que hay que conocer:
+
+- **`strict: true`**: activa un grupo de chequeos. Los más importantes:
+  - `strictNullChecks`: `null` y `undefined` son tipos aparte. Sin esto, cualquier variable puede ser `null` sin que TS avise: el error más común de JavaScript queda sin detectar.
+  - `noImplicitAny`: error si TS no puede inferir un tipo y usaría `any` en silencio.
+  - `strictFunctionTypes`, `strictPropertyInitialization`, `useUnknownInCatchVariables`…
+- **`noUncheckedIndexedAccess`**: acceder por índice (`list[0]`, `record[key]`) devuelve `T | undefined`, que es **la verdad**: el array puede estar vacío y la clave puede no existir. Obliga a manejarlo.
+- Otras útiles: `noUnusedLocals`, `noFallthroughCasesInSwitch`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax` (obliga a `import type` para importar solo tipos).
+
+Este repo usa `strict`, `noUncheckedIndexedAccess`, `noUnusedLocals`, `noFallthroughCasesInSwitch` y `verbatimModuleSyntax`. En un proyecto nuevo, **`strict` siempre**; en uno viejo se activa por partes.
+
+<Example title="lo que cambia con noUncheckedIndexedAccess">
+
+```ts
+const entries: Entry[] = [];
+const byProject: Record<string, number> = {};
+
+// sin noUncheckedIndexedAccess
+const first = entries[0]; // Entry  ← mentira si está vacío
+first.hours; // compila y explota
+
+// con noUncheckedIndexedAccess (este repo)
+const first2 = entries[0]; // Entry | undefined
+first2.hours; // Error: 'first2' is possibly 'undefined'.
+first2?.hours ?? 0; // ok
+const planner = byProject["Planner"]; // number | undefined
+
+for (const e of entries) e.hours; // en for…of, map, etc. no hace falta: el elemento existe
+```
+
+<Run
+  run={(log) => {
+    const entries = [];
+    const byProject = {};
+    try {
+      entries[0].hours;
+    } catch (e) {
+      log("entries[0].hours con un array vacío →", `${e.name}: ${e.message}`);
+    }
+    log("byProject['Planner'] →", String(byProject["Planner"]));
+    log("con ?. y ?? →", entries[0]?.hours ?? 0);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  I always enable strict mode; strictNullChecks alone prevents the most common JavaScript bug. I
+  also like noUncheckedIndexedAccess, which makes array and record lookups return T or undefined,
+  because that's what can actually happen at runtime.
+</SayIt>

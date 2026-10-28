@@ -1,0 +1,245 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  CloneElementDemo,
+  FlushSyncDemo,
+  FragmentRefDemo,
+  ProfilerDemo,
+  UsePromiseDemo,
+} from "./use-and-apis.examples";
+
+export const meta = {
+  title: "use y otras APIs",
+  section: "react-expert",
+  order: 30,
+  summary:
+    "use(promise) con Suspense, el componente Profiler, cloneElement, useDebugValue, flushSync y un vistazo a las APIs más nuevas (Fragment refs, ViewTransition, Activity).",
+};
+
+## ¿Qué es `use` y cómo se usa con una promesa?
+
+`use(recurso)` (React 19) lee el valor de un **contexto** (ver la página de Context) o de una **promesa**.
+
+Con una promesa:
+
+- Si la promesa **ya se resolvió**, `use` devuelve el valor.
+- Si **todavía está pendiente**, el componente **suspende**: React muestra el `fallback` del `<Suspense>` más cercano y vuelve a intentar cuando se resuelva.
+- Si se **rechaza**, el error sube al **Error Boundary** más cercano.
+
+El resultado: el componente se escribe como si los datos ya estuvieran ahí, sin `isLoading` ni `useEffect`.
+
+<Example title="buscar proyectos con use + Suspense">
+
+```tsx
+// La promesa se crea FUERA del render y se cachea por query
+const cache = new Map<string, Promise<string[]>>();
+function getProjects(query: string) {
+  if (!cache.has(query)) cache.set(query, searchProjects(query));
+  return cache.get(query)!;
+}
+
+function ProjectList({ query }: { query: string }) {
+  const projects = use(getProjects(query)); // suspende mientras carga
+  return <p>{projects.join(", ")}</p>;
+}
+
+<Suspense fallback={<p>Buscando…</p>}>
+  <ProjectList query={query} />
+</Suspense>;
+```
+
+<Live hint="cambia de búsqueda; luego marca 'con startTransition' y prueba una nueva">
+  <UsePromiseDemo />
+</Live>
+
+</Example>
+
+Con `startTransition`, React mantiene los resultados anteriores (atenuados) en lugar de volver al fallback: es la combinación de Suspense con Concurrent React.
+
+<Pitfall title="No crees la promesa dentro del render">
+  `use(fetch(url))` en el cuerpo del componente crea una promesa **nueva** en cada render: el
+  componente suspende, React reintenta, se crea otra promesa, suspende otra vez… Las promesas tienen
+  que venir **de afuera**: cacheadas, de un Server Component (que se la pasa como prop a un Client
+  Component) o de una librería (React Query, el router). Por eso en apps reales `use` se usa a
+  través de un framework.
+</Pitfall>
+
+<SayIt>
+  use reads a context or a promise during render. With a promise, it suspends until it resolves, so
+  the nearest Suspense shows its fallback, and a rejection goes to the error boundary. The promise
+  has to be created outside render and cached, usually by a framework or a data library.
+</SayIt>
+
+## ¿Qué es el Profiler en React?
+
+Hay dos "Profilers":
+
+1. **La pestaña Profiler de React DevTools**: la que usas en el día a día. Grabas una interacción y ves qué se renderizó, cuánto tardó y por qué.
+2. **El componente `<Profiler>`**: mide un subárbol **desde el código**. Útil para enviar métricas a analytics o para tests de performance.
+
+```tsx
+<Profiler id="HoursChart" onRender={onRender}>
+  <HoursChart />
+</Profiler>
+```
+
+`onRender(id, phase, actualDuration, baseDuration, startTime, commitTime)` se llama cada vez que el subárbol hace commit:
+
+| Parámetro        | Significa                                                                      |
+| ---------------- | ------------------------------------------------------------------------------ |
+| `phase`          | `"mount"`, `"update"` o `"nested-update"`                                      |
+| `actualDuration` | Lo que tardó **este** render (baja si `memo` funciona)                         |
+| `baseDuration`   | Lo que tardaría renderizar todo el subárbol **sin** memoización (el peor caso) |
+
+<Example title="medir un componente lento">
+
+<Live hint="haz clic varias veces (las mediciones solo aparecen con npm run dev)">
+  <ProfilerDemo />
+</Live>
+
+</Example>
+
+<Tip title="Producción">
+  `<Profiler>` está desactivado en el build de producción normal (para no agregar costo); hace falta un build de
+  "profiling" de `react-dom` para medir allí. Por eso este ejemplo solo muestra datos con `npm run dev`. Si `onRender` guarda las mediciones
+  en el estado del componente medido, provocas un render que genera otra medición: un bucle. Guárdalas fuera.
+</Tip>
+
+<SayIt>
+  The Profiler component measures how long a subtree takes to render and calls onRender with the
+  phase, the actual duration and the base duration without memoization. Day to day I use the
+  Profiler tab in React DevTools; the component is for collecting metrics in code.
+</SayIt>
+
+## ¿Para qué sirve cloneElement?
+
+`cloneElement(element, extraProps, ...children)` crea una **copia de un elemento de React** con props agregadas o reemplazadas. Se usaba para que un componente padre "inyecte" props en sus `children` sin que quien los escribe tenga que pasarlas:
+
+<Example title="un grupo que ajusta a cada botón">
+
+```tsx
+function ButtonGroup({ children, size }) {
+  return Children.map(children, (child, index) =>
+    isValidElement(child) ? cloneElement(child, { "data-index": index, size }) : child,
+  );
+}
+
+<ButtonGroup size="lg">
+  <button>Día</button>
+  <button>Semana</button>
+</ButtonGroup>;
+```
+
+<Live>
+  <CloneElementDemo />
+</Live>
+
+</Example>
+
+La doc de React lo marca como **API poco común** porque es **frágil**:
+
+- Es invisible: quien lee `<button>Día</button>` no sabe que recibirá más props.
+- Se rompe si envuelves un hijo en otro componente o en un Fragment (el `cloneElement` le pone las props al envoltorio).
+- TypeScript no puede verificar que el hijo acepte esas props.
+
+Alternativas recomendadas: **Context** (el patrón _compound components_: `<Tabs>` provee y cada `<Tab>` lee), **render props**, o pasar datos explícitamente.
+
+<SayIt>
+  cloneElement copies a React element with extra or overridden props. It lets a parent inject props
+  into its children, but it's fragile and implicit, so I prefer context with compound components or
+  render props.
+</SayIt>
+
+## ¿Qué es useDebugValue?
+
+`useDebugValue(value, format?)` agrega una **etiqueta a un custom hook en React DevTools**. Cuando inspeccionas un componente, en lugar de ver solo los `useState` internos del hook, ves un texto legible.
+
+```tsx
+function useOnlineStatus() {
+  const isOnline = useSyncExternalStore(subscribe, () => navigator.onLine);
+  useDebugValue(isOnline ? "Online" : "Offline"); // en DevTools: OnlineStatus: "Online"
+  return isOnline;
+}
+
+// Si formatear es caro, pasa una función: solo se ejecuta cuando DevTools inspecciona
+useDebugValue(date, (d) => d.toISOString());
+```
+
+Solo tiene sentido en hooks **compartidos** (de una librería o del design system). No afecta al comportamiento ni al render.
+
+<SayIt>
+  useDebugValue adds a label to a custom hook in React DevTools, so when you inspect a component you
+  see something readable. It's only worth it in shared hooks, and it doesn't change behavior.
+</SayIt>
+
+## ¿Qué hace flushSync?
+
+React **agrupa** (_batching_) las actualizaciones de estado y actualiza el DOM después de que tu handler termina. Casi siempre es lo que quieres.
+
+`flushSync(() => setState(...))` (de `react-dom`) obliga a React a **aplicar esa actualización al DOM inmediatamente**, antes de pasar a la siguiente línea. Sirve cuando necesitas leer o usar el DOM actualizado en ese mismo handler:
+
+- hacer scroll al elemento que acabas de agregar,
+- enfocar un input que acaba de aparecer,
+- integrar con una API del navegador que espera el DOM listo (por ejemplo, `window.print()` o una View Transition manual).
+
+<Example title="agregar un mensaje y hacer scroll al final">
+
+```tsx
+const add = () => {
+  flushSync(() => setItems((prev) => [...prev, newMessage]));
+  listRef.current.lastElementChild.scrollIntoView(); // el DOM ya tiene el mensaje
+};
+```
+
+<Live hint="'normal' siempre se queda un mensaje antes del último; 'flushSync' llega al final">
+  <FlushSyncDemo />
+</Live>
+
+</Example>
+
+<Pitfall>
+  `flushSync` rompe el batching y fuerza renders síncronos: perjudica la performance si se abusa. Es
+  una vía de escape para casos puntuales; no se puede llamar durante el render.
+</Pitfall>
+
+<SayIt>
+  flushSync forces React to apply a state update to the DOM synchronously instead of batching it. I
+  only use it when I need the updated DOM right away in the same handler, like scrolling to an item
+  I just added.
+</SayIt>
+
+## APIs nuevas: Fragment refs, ViewTransition y Activity
+
+Son APIs recientes de React 19.x. Conviene saber **qué son**; los detalles cambian rápido, así que revisa la documentación de tu versión antes de usarlas.
+
+- **Fragment refs**: `<Fragment ref={ref}>` te da un objeto (`FragmentInstance`) que actúa sobre **los nodos DOM hijos** del Fragment sin agregar un `<div>` envoltorio: `focus()` (primer elemento enfocable), `focusLast()`, `addEventListener`, `observeUsing(observer)` para Intersection/ResizeObserver, `getClientRects()`.
+- **`<ViewTransition>`**: integra la **View Transitions API** del navegador. Envuelves un elemento y, cuando cambia dentro de una transición (`startTransition`, Suspense revelando contenido), React anima la entrada, salida o cambio con CSS.
+- **`<Activity mode="hidden" | "visible">`**: oculta una parte de la UI **sin desmontarla**: conserva su estado y su DOM, pero desmonta sus efectos mientras está oculta. Útil para pestañas o para pre-renderizar la pantalla siguiente.
+
+<Example title="un Fragment ref que enfoca a sus hijos">
+
+```tsx
+const fragmentRef = useRef<FragmentInstance>(null);
+
+<Fragment ref={fragmentRef}>
+  <input placeholder="Primer campo" />
+  <input placeholder="Segundo campo" />
+</Fragment>
+<button onClick={() => fragmentRef.current?.focus()}>focus()</button>
+
+// ViewTransition y Activity, solo como referencia
+<ViewTransition>{open ? <Details /> : <Summary />}</ViewTransition>
+<Activity mode={tab === "reports" ? "visible" : "hidden"}><Reports /></Activity>
+```
+
+<Live>
+  <FragmentRefDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  React 19 added a few newer APIs: Fragment refs to work with a fragment's DOM children without a
+  wrapper, ViewTransition to animate updates with the browser's View Transitions API, and Activity
+  to hide part of the UI while keeping its state. I know what they're for and I'd check the docs for
+  the exact API before using them.
+</SayIt>

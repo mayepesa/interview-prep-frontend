@@ -1,0 +1,349 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  DelegationDemo,
+  FormDemo,
+  ParamsDemo,
+  PhasesDemo,
+  StopPropagationDemo,
+  SyntheticDemo,
+} from "./events.examples";
+
+export const meta = {
+  title: "Eventos",
+  section: "react-basics",
+  order: 50,
+  summary:
+    "Cómo manejar eventos en React: pasar parámetros, preventDefault, SyntheticEvent, fases de captura y burbuja, stopPropagation y cómo React delega los eventos en la raíz.",
+};
+
+## ¿Cómo añadir un evento a un componente?
+
+En React los eventos se declaran como **props** del elemento, con nombres en **camelCase** (`onClick`, `onChange`, `onSubmit`, `onKeyDown`, `onMouseEnter`) y su valor es **una función**, no un string como en HTML.
+
+```html
+<!-- HTML: un string con código -->
+<button onclick="save()">Guardar</button>
+```
+
+```tsx
+// React: una referencia a una función
+<button onClick={save}>Guardar</button>
+```
+
+Lo más importante: **pasa la función, no la llames**. `onClick={save}` le da la función a React para que la ejecute cuando ocurra el clic. `onClick={save()}` la ejecuta **durante el render** y le pasa a React su resultado (normalmente `undefined`). Si además `save` hace un `setState`, provocas un loop infinito de renders.
+
+Convenciones:
+
+- Los handlers internos se llaman `handleX` (`handleSubmit`, `handleDelete`).
+- Las props que reciben un handler se llaman `onX` (`onDelete`, `onSelect`), igual que los eventos nativos.
+- En TypeScript, el evento se tipa con los tipos de React: `React.MouseEvent<HTMLButtonElement>`, `React.ChangeEvent<HTMLInputElement>`, `React.FormEvent<HTMLFormElement>`. Si declaras el handler en línea, el tipo se infiere solo.
+
+Los eventos solo se ponen en **elementos del DOM** (`<button>`, `<div>`). En tus propios componentes, `onClick` es una prop más: el componente decide a qué elemento la pasa.
+
+<Compare>
+<Bad>
+
+```tsx
+<button onClick={save()}>Guardar</button>
+// save corre en el render
+```
+
+</Bad>
+<Good>
+
+```tsx
+<button onClick={save}>Guardar</button>
+<button onClick={() => save()}>Guardar</button>
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  In React I attach events as camelCase props on DOM elements and pass a function reference, not a
+  call. Calling the function inside the JSX would run it during render. By convention, internal
+  handlers are named handleX and props that receive them are named onX.
+</SayIt>
+
+## ¿Cómo pasar un parámetro a una función que maneja un evento?
+
+Como necesitas pasar **una función** y no llamarla, envuelves la llamada en una **arrow function**: `onClick={() => selectDay(day)}`. La arrow se crea en el render, pero solo se ejecuta al hacer clic, y en ese momento llama a `selectDay` con el parámetro.
+
+Si también necesitas el evento: `onClick={(e) => selectDay(day, e)}`.
+
+Alternativas:
+
+- **Componente hijo** que recibe el dato por props y tiene su propio handler (`<DayButton day={day} onSelect={selectDay} />`). Útil en listas grandes o con `memo`.
+- **Atributos `data-*`** y leerlos desde `e.currentTarget.dataset` (ver delegación al final de la página).
+- `bind`: `onClick={selectDay.bind(null, day)}`. Funciona, pero es menos legible.
+
+<Tip title="¿Crear arrow functions en el render es lento?">
+  Casi nunca importa: crear una función es muy barato. Solo cobra sentido evitarlo cuando la pasas a
+  un hijo envuelto en `memo`, porque una función nueva rompe la comparación de props. Para eso está
+  `useCallback`.
+</Tip>
+
+<Example title="un handler, varios parámetros">
+
+```tsx
+const selectDay = (day: string) => add(`seleccionado: ${day}`);
+
+{
+  ["Lun", "Mar", "Mié", "Jue", "Vie"].map((day) => (
+    <button key={day} onClick={() => selectDay(day)}>
+      {day}
+    </button>
+  ));
+}
+```
+
+<Live hint="haz clic en los días">
+  <ParamsDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  To pass a parameter, I wrap the call in an arrow function, like onClick equals arrow
+  selectDay(day). The arrow is created during render but only runs on click. In a long memoized list
+  I might extract a child component or use data attributes instead.
+</SayIt>
+
+## ¿Cómo prevenir el comportamiento por defecto de un evento?
+
+Algunos eventos tienen una **acción por defecto del navegador**:
+
+- `submit` en un formulario → envía los datos y **recarga la página** (o navega al `action`).
+- `click` en un `<a href>` → navega.
+- `keydown` de ciertas teclas → escribe el carácter, hace scroll con la barra espaciadora, etc.
+- `contextmenu` → abre el menú contextual.
+
+En React no puedes devolver `false` para evitarlo (en HTML antiguo sí). Tienes que llamar explícitamente a **`event.preventDefault()`**.
+
+El caso más común es el formulario: en una SPA quieres manejar el envío con JavaScript (validar, llamar a la API) sin recargar.
+
+<Example title="formulario y link sin acción por defecto">
+
+```tsx
+const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  event.preventDefault(); // sin esto, la página se recarga
+  const data = new FormData(event.currentTarget);
+  save({ project: data.get("project"), hours: Number(data.get("hours")) });
+};
+
+<form onSubmit={handleSubmit}>
+  <input name="project" />
+  <input name="hours" type="number" />
+  <button type="submit">Guardar</button>
+</form>;
+```
+
+<Live hint="guarda el formulario y haz clic en el link: no se recarga ni navega">
+  <FormDemo />
+</Live>
+
+</Example>
+
+<Tip title="React 19: form actions">
+  Con React 19 también puedes pasar una función a `<form action={fn}>`. React la llama con el `FormData`,
+  evita la recarga por ti y se integra con `useActionState` y `useFormStatus`. Lo ves en la página de Actions.
+</Tip>
+
+<Pitfall>
+  `preventDefault` y `stopPropagation` son cosas distintas: el primero cancela la **acción del
+  navegador**; el segundo detiene la **propagación** del evento a los padres. Llamar a uno no hace
+  lo otro.
+</Pitfall>
+
+<SayIt>
+  I call event.preventDefault to stop the browser's default action, most often in a form submit
+  handler so the page doesn't reload and I can handle the data in JavaScript. Returning false
+  doesn't work in React. In React 19 I can also use form actions, which handle that for me.
+</SayIt>
+
+## ¿Qué es el SyntheticEvent?
+
+Cuando ocurre un evento, React no te pasa el evento nativo del navegador directamente: te pasa un **SyntheticEvent**, un objeto **envoltorio** (_wrapper_) creado por React alrededor del evento nativo.
+
+¿Para qué sirve?
+
+- **API consistente entre navegadores**: mismas propiedades y comportamiento en Chrome, Firefox o Safari (`stopPropagation()`, `preventDefault()`, `target`, `currentTarget`, `key`…).
+- **Normaliza diferencias**: por ejemplo, en React `onChange` de un input se dispara **en cada tecla** (como el evento nativo `input`), no solo al perder el foco como el `change` nativo.
+- **Integra los eventos con el sistema de React**: prioridades de actualización y batching.
+
+Detalles que suelen preguntar:
+
+- Desde **React 17 ya no hay event pooling**: antes React reutilizaba el objeto y lo vaciaba tras el handler (tenías que llamar a `e.persist()` para usarlo en un `setTimeout`). Hoy puedes guardarlo y leerlo después sin problema.
+- Algunos eventos que en el DOM no burbujean (como `focus`) en React se manejan para que **sí** burbujeen (`onFocus` usa `focusin` por debajo). En cambio, `onScroll` **no** burbujea desde React 17.
+
+<Example title="qué trae el evento">
+
+```tsx
+const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
+  event.type; // "click"
+  event.nativeEvent; // el PointerEvent / MouseEvent real del navegador
+  event.currentTarget.tagName; // "BUTTON"
+  (event.clientX, event.clientY); // coordenadas, igual que en el nativo
+};
+```
+
+<Live hint="haz clic en distintas partes del botón">
+  <SyntheticDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  A SyntheticEvent is React's cross-browser wrapper around the native event. It exposes the same
+  interface, like preventDefault, stopPropagation and target, and behaves consistently across
+  browsers. Since React 17 there's no event pooling, so I can keep a reference to the event after
+  the handler.
+</SayIt>
+
+## ¿Cómo acceder al evento nativo del navegador?
+
+Con **`event.nativeEvent`**. Lo necesitas en casos puntuales:
+
+- Propiedades que el SyntheticEvent no expone o que se comportan distinto (`event.nativeEvent.offsetX`, `isComposing` en inputs con IME, `submitter` de un formulario).
+- Integrar con librerías que esperan un `Event` nativo.
+
+Para eventos **fuera** del árbol de React (`window`, `document`, `resize`, `scroll` de la página, `keydown` global) no hay prop de JSX: te suscribes con `addEventListener` dentro de un **`useEffect`** con su cleanup. Ahí recibes eventos nativos directamente.
+
+```tsx
+const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  e.preventDefault();
+  const submitter = (e.nativeEvent as SubmitEvent).submitter; // qué botón lo envió
+};
+
+useEffect(() => {
+  const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
+  document.addEventListener("keydown", onKey);
+  return () => document.removeEventListener("keydown", onKey);
+}, [close]);
+```
+
+<SayIt>
+  I can read the browser's original event through event.nativeEvent, which I rarely need. For global
+  events on window or document I add a native listener inside useEffect and remove it in the
+  cleanup.
+</SayIt>
+
+## ¿Qué es el bubbling y la fase de captura?
+
+Cuando haces clic en un elemento, el evento no ocurre solo en él. Recorre el árbol del DOM en **tres fases**:
+
+1. **Captura** (_capture_): baja desde `window` hasta el padre del elemento clicado.
+2. **Target**: llega al elemento donde ocurrió (el `event.target`).
+3. **Burbuja** (_bubbling_): sube desde el target hasta `window`, pasando por todos los ancestros.
+
+Por defecto, los handlers de React (`onClick`) escuchan en la fase de **burbuja**: primero se ejecuta el del botón, después el del `div` que lo contiene, después el de la `section`.
+
+Para escuchar en la fase de **captura**, React agrega el sufijo **`Capture`**: `onClickCapture`, `onKeyDownCapture`, `onFocusCapture`. Esos handlers corren **antes** que los de burbuja, de afuera hacia adentro. Se usan poco: para registrar analytics de todos los clics, o para interceptar un evento antes de que lo procesen los hijos.
+
+<Example title="el recorrido completo de un clic">
+
+```tsx
+<section
+  onClickCapture={() => log("1. captura en section")}
+  onClick={() => log("5. burbuja en section")}
+>
+  <div onClickCapture={() => log("2. captura en div")} onClick={() => log("4. burbuja en div")}>
+    <button onClick={() => log("3. target: button")}>Haz clic aquí</button>
+  </div>
+</section>
+```
+
+<Live hint="haz clic en el botón y lee el orden">
+  <PhasesDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  Events travel in three phases: capture from the root down to the target, the target itself, and
+  bubbling back up. React handlers like onClick run in the bubbling phase; to listen during capture
+  I use the Capture suffix, like onClickCapture, which runs before the children's handlers.
+</SayIt>
+
+## ¿Para qué sirve stopPropagation?
+
+`event.stopPropagation()` **detiene el recorrido** del evento: los ancestros no reciben el evento en las fases siguientes. Lo usas cuando un elemento interactivo está **dentro de otro** que también reacciona al clic:
+
+- Un botón "Borrar" dentro de una tarjeta que abre el detalle al hacer clic.
+- Un clic dentro de un modal que no debe cerrar el overlay de fondo.
+- Un menú desplegable dentro de una fila clicable.
+
+Úsalo con cuidado: rompe a cualquier padre que dependa de ese evento (analytics, "cerrar al hacer clic afuera"). Muchas veces es mejor **comprobar el target** en el padre (`if (e.target === e.currentTarget)`) en lugar de cortar la propagación en el hijo.
+
+<Example title="un botón dentro de una tarjeta clicable">
+
+```tsx
+<div onClick={openDetail} className="card">
+  Revisar PR #42
+  <button
+    onClick={(e) => {
+      e.stopPropagation(); // la tarjeta no se entera del clic
+      deleteTask();
+    }}
+  >
+    Borrar
+  </button>
+</div>
+```
+
+<Live hint="haz clic en Borrar con y sin stopPropagation">
+  <StopPropagationDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  stopPropagation prevents the event from reaching parent handlers. A typical case is a delete
+  button inside a clickable card, so clicking delete doesn't also open the card. I use it sparingly
+  because it can break parent logic like click-outside detection or analytics.
+</SayIt>
+
+## ¿Cómo funciona la delegación de eventos en React?
+
+**Delegación de eventos** es una técnica clásica del DOM: en lugar de poner un listener en cada uno de los 1.000 ítems de una lista, pones **uno solo** en el contenedor y, gracias al bubbling, averiguas en qué ítem ocurrió con `event.target`.
+
+**React usa delegación por dentro, automáticamente.** Aunque escribas `onClick` en 1.000 botones, React **no** llama a `addEventListener` 1.000 veces: registra **un listener por tipo de evento en el contenedor raíz** (el nodo que pasaste a `createRoot`). Cuando llega un clic, React mira qué fiber corresponde al `target`, recorre el árbol de componentes y ejecuta tus handlers en orden, simulando captura y burbuja.
+
+Cambio importante en **React 17**: antes los listeners se registraban en `document`; ahora en el **contenedor raíz**. Esto permite tener varias apps de React (o versiones distintas) en la misma página sin que sus eventos se mezclen, algo clave en micro-frontends o en apps embebidas dentro de otro producto.
+
+Consecuencias prácticas:
+
+- `e.stopPropagation()` en un handler de React detiene la propagación **dentro de React**, pero el evento nativo ya burbujeó hasta la raíz. Un `document.addEventListener` igual lo recibe (después de que React terminó).
+- **`event.target`** es el elemento exacto donde ocurrió el evento (puede ser un `<strong>` dentro del `<li>`); **`event.currentTarget`** es el elemento cuyo handler se está ejecutando. Al delegar manualmente, usa `target.closest(…)`.
+
+Aun así, puedes delegar tú mismo en React cuando quieras **un solo handler** para muchos ítems (por ejemplo, para no crear una arrow por fila).
+
+<Example title="delegación manual con data-id">
+
+```tsx
+const handleListClick = (event: React.MouseEvent<HTMLUListElement>) => {
+  const item = (event.target as HTMLElement).closest<HTMLElement>("[data-id]");
+  if (item) openTask(item.dataset.id!);
+};
+
+<ul onClick={handleListClick}>
+  {tasks.map((task) => (
+    <li key={task.id} data-id={task.id}>
+      <strong>{task.title}</strong> <small>…</small>
+    </li>
+  ))}
+</ul>;
+```
+
+<Live hint="haz clic en el título (strong) y en el texto pequeño: el target cambia, el id no">
+  <DelegationDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  React already uses event delegation: instead of attaching a listener to every element, it attaches
+  one listener per event type to the root container and dispatches to my handlers based on the
+  target. Since React 17 that's the root, not the document, so multiple React apps can coexist on a
+  page. I can still delegate manually with event.target and data attributes.
+</SayIt>

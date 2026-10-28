@@ -1,0 +1,337 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { CounterWithReducer, MutationInReducerDemo, TodoApp } from "./use-reducer.examples";
+
+export const meta = {
+  title: "useReducer",
+  section: "react-basics",
+  order: 80,
+  summary:
+    "Qué es un reducer, cómo funciona useReducer, cuándo conviene más que useState, por qué el reducer debe ser puro e inmutable y cómo tipar las acciones con uniones discriminadas.",
+};
+
+## ¿Qué hace el hook useReducer?
+
+`useReducer` es una alternativa a `useState` para manejar estado con **varias formas de cambiar**. En vez de llamar a setters sueltos desde los handlers, **describes qué pasó** con una **acción** y una función pura, el **reducer**, decide cómo cambia el estado.
+
+```tsx
+const [state, dispatch] = useReducer(reducer, initialState);
+
+function reducer(state: State, action: Action): State {
+  // devuelve el NUEVO estado según la acción
+}
+
+dispatch({ type: "added", id, text }); // "pasó esto"
+```
+
+Las piezas:
+
+- **Estado**: el valor actual (normalmente un objeto o un array).
+- **Acción**: un objeto que describe **qué pasó**, con un campo `type` y los datos necesarios (el _payload_). Por convención el `type` describe un hecho: `"added"`, `"toggled"`, `"step_changed"`.
+- **Reducer**: `(estado, acción) => nuevoEstado`. Es el **único lugar** donde se decide cómo cambia el estado.
+- **`dispatch`**: la función que envía una acción. React llama al reducer con el estado actual y la acción, guarda el resultado y re-renderiza si cambió. `dispatch` es **estable** (la misma función en cada render).
+
+El nombre viene de `Array.prototype.reduce`: un reducer "reduce" una secuencia de acciones a un estado final, igual que `reduce` reduce un array a un valor. Es el mismo patrón que popularizó **Redux**, pero local al componente.
+
+`useReducer` también acepta un tercer argumento, `init`, para inicialización perezosa: `useReducer(reducer, userId, createInitialState)`.
+
+<Example title="un contador con paso configurable">
+
+```tsx
+type State = { count: number; step: number };
+type Action =
+  | { type: "incremented" }
+  | { type: "decremented" }
+  | { type: "step_changed"; step: number }
+  | { type: "reset" };
+
+function counterReducer(state: State, action: Action): State {
+  switch (action.type) {
+    case "incremented":
+      return { ...state, count: state.count + state.step };
+    case "decremented":
+      return { ...state, count: state.count - state.step };
+    case "step_changed":
+      return { ...state, step: action.step };
+    case "reset":
+      return { count: 0, step: 1 };
+  }
+}
+
+const [state, dispatch] = useReducer(counterReducer, { count: 0, step: 1 });
+<button onClick={() => dispatch({ type: "incremented" })}>+{state.step}</button>;
+```
+
+<Live hint="cambia el paso y suma o resta">
+  <CounterWithReducer />
+</Live>
+
+</Example>
+
+<SayIt>
+  useReducer manages state through a pure reducer function that takes the current state and an
+  action and returns the next state. Components dispatch actions describing what happened, and all
+  the update logic lives in one place, which makes it predictable and easy to test.
+</SayIt>
+
+## ¿Cuándo usar useReducer en vez de useState?
+
+Los dos hacen lo mismo por debajo (de hecho, `useState` está implementado con un reducer). La diferencia es **cómo organizas la lógica**:
+
+|                         | `useState`                                             | `useReducer`                                                   |
+| ----------------------- | ------------------------------------------------------ | -------------------------------------------------------------- |
+| Ideal para              | Valores independientes y simples (un toggle, un input) | Estado con **varias acciones** o **campos que cambian juntos** |
+| Dónde vive la lógica    | Repartida en los handlers                              | Centralizada en el reducer                                     |
+| Legibilidad del handler | `setItems(prev => prev.map(...))`                      | `dispatch({ type: "toggled", id })`                            |
+| Testing                 | Hay que renderizar el componente                       | El reducer se testea como una función pura                     |
+| Debugging               | Ves el valor nuevo                                     | Ves **qué acción** lo cambió                                   |
+| Código                  | Menos                                                  | Más (tipos, switch)                                            |
+
+Señales de que conviene `useReducer`:
+
+- El siguiente estado depende del anterior de formas distintas (agregar, editar, borrar, reordenar).
+- Varios `useState` que **siempre** se actualizan juntos (`isLoading`, `error`, `data`): con un reducer no puedes dejarlos en una combinación imposible.
+- Los handlers se están llenando de lógica de actualización repetida.
+- Quieres pasar **una sola función** (`dispatch`) a hijos profundos, por ejemplo con contexto, en lugar de muchos callbacks.
+
+Para un booleano o un input, `useState` es más simple y está bien.
+
+<Compare>
+<Bad>
+
+```tsx
+const [isLoading, setIsLoading] = useState(false);
+const [error, setError] = useState<Error | null>(null);
+const [data, setData] = useState<Project[] | null>(null);
+// ¿qué pasa si olvido setError(null) al reintentar?
+```
+
+</Bad>
+<Good>
+
+```tsx
+type State =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "error"; error: Error }
+  | { status: "success"; data: Project[] };
+
+const [state, dispatch] = useReducer(fetchReducer, { status: "idle" });
+// imposible estar "loading" y "error" a la vez
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  I use useState for simple, independent values, and useReducer when the state has several related
+  fields or many ways to change. A reducer centralizes the transitions, prevents impossible state
+  combinations, and can be unit tested without rendering anything.
+</SayIt>
+
+## ¿Por qué el reducer debe ser una función pura?
+
+Una **función pura**:
+
+1. Con las mismas entradas **siempre** devuelve el mismo resultado.
+2. **No tiene efectos colaterales**: no modifica sus argumentos ni nada externo.
+
+Para un reducer eso significa: **no** hacer `fetch`, **no** escribir en `localStorage`, **no** usar `Math.random()`, `Date.now()` ni `crypto.randomUUID()`, **no** mutar `state` ni `action`.
+
+¿Por qué es tan importante?
+
+- **React puede llamar al reducer más de una vez.** En desarrollo con StrictMode lo llama **dos veces** a propósito para detectar impurezas. Con renderizado concurrente puede recalcular actualizaciones. Si el reducer genera un id aleatorio, cada llamada da un id distinto.
+- **Es predecible y testeable**: dado un estado y una acción, sabes exactamente el resultado.
+- Permite herramientas como _time-travel debugging_ (reproducir acciones).
+
+¿Dónde van los efectos entonces? En el **event handler** (antes o después de `dispatch`) o en un `useEffect`. Los valores no deterministas (un id, la fecha) se generan en el handler y **viajan en la acción**.
+
+<Example title="el id se crea en el handler, no en el reducer">
+
+<Compare>
+<Bad>
+
+```tsx
+case "added":
+  return [...state, {
+    id: crypto.randomUUID(), // impuro: otro id en cada llamada
+    text: action.text,
+    done: false,
+  }];
+```
+
+</Bad>
+<Good>
+
+```tsx
+// handler
+dispatch({ type: "added", id: crypto.randomUUID(), text });
+
+// reducer
+case "added":
+  return [...state, { id: action.id, text: action.text, done: false }];
+```
+
+</Good>
+</Compare>
+
+<Live hint="agrega, marca, borra y limpia las hechas">
+  <TodoApp />
+</Live>
+
+</Example>
+
+<SayIt>
+  A reducer must be pure: same state and action in, same state out, with no side effects or
+  mutations. React may call it more than once, and StrictMode does so on purpose. Anything
+  non-deterministic, like generating an id, happens in the event handler and travels in the action.
+</SayIt>
+
+## ¿Cómo tipar las acciones con uniones discriminadas?
+
+Una **unión discriminada** (_discriminated union_) es una unión de tipos de objeto que comparten un campo literal, el **discriminante** (aquí `type`). TypeScript usa ese campo para saber **qué forma tiene** cada acción.
+
+```ts
+type TodoAction =
+  | { type: "added"; id: string; text: string }
+  | { type: "toggled"; id: string }
+  | { type: "removed"; id: string }
+  | { type: "cleared_done" };
+```
+
+Beneficios:
+
+- Dentro de `case "added":` TypeScript sabe que `action.text` existe; en `case "toggled":` te marca error si intentas leer `action.text` (_narrowing_).
+- Al hacer `dispatch` el editor autocompleta los `type` válidos y te obliga a pasar el payload correcto: `dispatch({ type: "toggled" })` sin `id` no compila.
+- Con un **chequeo exhaustivo** en el `default`, si mañana alguien agrega `{ type: "renamed" }` a la unión y olvida manejarla, el código **no compila**.
+
+<Example title="el reducer completo con chequeo exhaustivo">
+
+```ts
+export function todosReducer(state: Todo[], action: TodoAction): Todo[] {
+  switch (action.type) {
+    case "added":
+      return [...state, { id: action.id, text: action.text, done: false }];
+    case "toggled":
+      return state.map((t) => (t.id === action.id ? { ...t, done: !t.done } : t));
+    case "removed":
+      return state.filter((t) => t.id !== action.id);
+    case "cleared_done":
+      return state.filter((t) => !t.done);
+    default: {
+      const unhandled: never = action; // error de compilación si falta un case
+      throw new Error(`Acción desconocida: ${JSON.stringify(unhandled)}`);
+    }
+  }
+}
+```
+
+</Example>
+
+<Tip>
+  Nombra las acciones como **hechos en pasado** (`"added"`, `"step_changed"`) y no como órdenes de
+  cómo cambiar el estado (`"setTodos"`). Así el componente dice *qué pasó* y el reducer decide *qué
+  hacer*.
+</Tip>
+
+<SayIt>
+  I type actions as a discriminated union on the type field, so TypeScript narrows the payload in
+  each case and autocompletes valid actions at the dispatch site. I add an exhaustive check with
+  never in the default branch, so forgetting to handle a new action is a compile error.
+</SayIt>
+
+## ¿Por qué no se debe mutar el estado en un reducer?
+
+Igual que con `useState`, React compara el estado anterior con el que devuelve el reducer usando **`Object.is`**. Si el reducer **muta** el array (`state.push(...)`) y devuelve **el mismo objeto**, la referencia no cambió: React concluye que no hay nada nuevo y **no actualiza la pantalla**. Los datos sí cambiaron, pero en silencio.
+
+Además, mutar rompe la pureza: si React llama dos veces al reducer, el `push` ocurre dos veces.
+
+Patrones inmutables más usados dentro de un reducer:
+
+| Operación        | Inmutable                                                       |
+| ---------------- | --------------------------------------------------------------- |
+| Agregar          | `[...state, item]`                                              |
+| Quitar           | `state.filter((x) => x.id !== id)`                              |
+| Editar un ítem   | `state.map((x) => (x.id === id ? { ...x, done: !x.done } : x))` |
+| Cambiar un campo | `{ ...state, step: action.step }`                               |
+| Ordenar          | `state.toSorted(compareFn)`                                     |
+
+Si el estado está muy anidado, **Immer** (`useImmerReducer` del paquete `use-immer`) te deja escribir `draft.push(item)` y genera la copia inmutable por ti.
+
+<Example title="reducer que muta vs reducer inmutable">
+
+<Compare>
+<Bad>
+
+```tsx
+function reducer(state: Todo[], action: Action) {
+  state.push({ id: action.id, text: action.text, done: false });
+  return state; // misma referencia → no hay re-render
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function reducer(state: Todo[], action: Action) {
+  return [...state, { id: action.id, text: action.text, done: false }];
+}
+```
+
+</Good>
+</Compare>
+
+<Live hint="reducer que muta: haz clic varias veces, la pantalla no cambia">
+  <MutationInReducerDemo mutate />
+</Live>
+
+<Live hint="reducer inmutable: cada clic agrega una tarea">
+  <MutationInReducerDemo mutate={false} />
+</Live>
+
+</Example>
+
+<SayIt>
+  React compares the previous and next state by reference. If the reducer mutates the array and
+  returns the same object, React thinks nothing changed and skips the update. So reducers always
+  return new objects or arrays, using spread, map and filter, or Immer for deeply nested state.
+</SayIt>
+
+## ¿Cómo se testea un reducer?
+
+Una gran ventaja de `useReducer`: como el reducer es una **función pura** en un archivo `.ts`, se testea **sin renderizar nada**, sin mocks y en milisegundos. Le das un estado y una acción y compruebas el resultado, incluyendo que **no mutó** el estado original.
+
+En este repo el reducer vive en `todos-reducer.ts` y su test en `use-reducer.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { todosReducer } from "./todos-reducer";
+
+describe("todosReducer", () => {
+  const initial = [{ id: "1", text: "a", done: false }];
+
+  it("adds a todo without mutating the previous state", () => {
+    const next = todosReducer(initial, { type: "added", id: "2", text: "b" });
+    expect(next).toHaveLength(2);
+    expect(initial).toHaveLength(1); // el original no cambió
+    expect(next).not.toBe(initial); // referencia nueva
+  });
+
+  it("toggles only the matching todo", () => {
+    const next = todosReducer(initial, { type: "toggled", id: "1" });
+    expect(next[0]?.done).toBe(true);
+    expect(initial[0]?.done).toBe(false);
+  });
+});
+```
+
+<Tip title="useReducer + Context">
+  Un patrón común para estado compartido en una sección de la app: el reducer en el componente
+  padre, y `state` y `dispatch` expuestos en **dos contextos** separados. Como `dispatch` nunca
+  cambia, los componentes que solo despachan acciones no se re-renderizan cuando cambia el estado.
+</Tip>
+
+<SayIt>
+  Since the reducer is a pure function, I test it directly: given a state and an action, I assert on
+  the returned state and check that the original wasn't mutated. No rendering or mocking needed.
+</SayIt>

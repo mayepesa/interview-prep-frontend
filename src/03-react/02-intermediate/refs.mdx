@@ -1,0 +1,283 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  CallbackRefDemo,
+  FocusAndScroll,
+  ImperativeDemo,
+  RefAsPropDemo,
+  RefVsState,
+  Stopwatch,
+} from "./refs.examples";
+
+export const meta = {
+  title: "Refs y useRef",
+  section: "react-intermediate",
+  order: 30,
+  summary:
+    "Qué es un ref, en qué se diferencia del estado, cómo acceder al DOM, por qué en React 19 ya no hace falta forwardRef y para qué sirve useImperativeHandle.",
+};
+
+## ¿Qué es un ref y cómo funciona useRef?
+
+`useRef(initialValue)` devuelve un objeto `{ current: initialValue }`. Tiene dos propiedades especiales:
+
+1. **Es el mismo objeto en todos los renders.** React lo guarda junto al componente, igual que el estado.
+2. **Cambiar `ref.current` no provoca un render.** Es una "caja" mutable que React ignora.
+
+Piénsalo como una variable de instancia de una clase (`this.timer`): algo que el componente **recuerda** pero que **no se muestra** en pantalla.
+
+Usos típicos:
+
+- guardar un **nodo del DOM** para enfocarlo, medirlo o hacer scroll,
+- guardar el **id de un timer** o de una suscripción,
+- guardar el **valor anterior** de una prop o el **último valor** para un callback asíncrono,
+- guardar una instancia de algo externo (un mapa, un editor, un chart).
+
+```tsx
+const timerRef = useRef<number | null>(null);
+timerRef.current = window.setInterval(tick, 1000); // no re-renderiza
+```
+
+<SayIt>
+  useRef gives me a mutable object whose current property survives re-renders, and changing it
+  doesn't trigger a render. I use it for DOM nodes, timer ids and other values the UI doesn't
+  display.
+</SayIt>
+
+## ¿Qué diferencia hay entre useRef y useState?
+
+|                           | `useState`                 | `useRef`                       |
+| ------------------------- | -------------------------- | ------------------------------ |
+| Se conserva entre renders | Sí                         | Sí                             |
+| Cambiarlo re-renderiza    | **Sí**                     | **No**                         |
+| Cómo se cambia            | Con el setter (`setX`)     | Mutando `ref.current`          |
+| El valor cambia…          | En el **siguiente** render | **Inmediatamente**             |
+| Leerlo durante el render  | Sí, es para eso            | No (salvo inicializar una vez) |
+
+Regla: **si el valor se muestra en pantalla, es estado. Si no, puede ser un ref.**
+
+<Example title="el mismo contador con useState y con useRef">
+
+```tsx
+const [stateCount, setStateCount] = useState(0);
+const refCount = useRef(0);
+
+<button onClick={() => setStateCount((c) => c + 1)}>useState: {stateCount}</button>
+<button onClick={() => { refCount.current += 1; }}>useRef: {refCount.current}</button>
+```
+
+<Live hint="haz clic en useRef 3 veces (no cambia nada) y luego en useState">
+  <RefVsState />
+</Live>
+
+</Example>
+
+El botón de `useRef` sí incrementa el valor, pero como no hay render, la pantalla muestra el número viejo. Cuando haces clic en `useState`, el componente se renderiza y **de golpe** aparece el valor real del ref.
+
+<Pitfall title="No leas ni escribas refs durante el render">
+  Leer `ref.current` en el JSX (como en este ejemplo) hace que la UI dependa de algo que React no
+  controla: se desincroniza. Lee y escribe refs en **event handlers y efectos**. La única excepción
+  es inicializarlo perezosamente: `if (ref.current === null) ref.current = new Expensive()`.
+</Pitfall>
+
+<SayIt>
+  Both survive re-renders, but updating state schedules a render and updating a ref doesn't. If the
+  value is shown on screen it should be state; if it's just something the component needs to
+  remember, a ref is enough.
+</SayIt>
+
+## Guardar valores que no se muestran: un cronómetro
+
+El id que devuelve `setInterval` hace falta para pararlo, pero nunca se muestra. Si lo pusieras en el estado, provocarías un render inútil y además el handler `stop` podría leer un valor viejo. En un ref el valor está disponible **al instante** en cualquier handler.
+
+<Example title="cronómetro con el id del intervalo en un ref">
+
+```tsx
+function Stopwatch() {
+  const [elapsed, setElapsed] = useState(0); // se muestra → estado
+  const timerRef = useRef<number | null>(null); // no se muestra → ref
+
+  const start = () => {
+    if (timerRef.current !== null) return; // ya corre
+    const startedAt = Date.now() - elapsed;
+    timerRef.current = window.setInterval(() => setElapsed(Date.now() - startedAt), 100);
+  };
+  const stop = () => {
+    if (timerRef.current !== null) clearInterval(timerRef.current);
+    timerRef.current = null;
+  };
+  // …
+}
+```
+
+<Live hint="inicia, para, vuelve a iniciar">
+  <Stopwatch />
+</Live>
+
+</Example>
+
+## ¿Cómo se accede a un elemento del DOM?
+
+Pasas el ref al atributo `ref` de un elemento JSX. Cuando React crea el nodo, pone el elemento en `ref.current`; cuando lo quita, lo vuelve a poner en `null`. Por eso el tipo es `useRef<HTMLInputElement>(null)` y siempre se accede con `?.`.
+
+Cuándo hace falta tocar el DOM directamente (lo que React no hace con props):
+
+- enfocar (`focus()`), seleccionar texto,
+- hacer scroll (`scrollIntoView`),
+- medir (`getBoundingClientRect`),
+- integrar librerías que no son de React (mapas, editores, gráficos).
+
+<Example title="enfocar un input y hacer scroll al final de una lista">
+
+```tsx
+const inputRef = useRef<HTMLInputElement>(null);
+const endRef = useRef<HTMLLIElement>(null);
+
+<input ref={inputRef} />
+<button onClick={() => inputRef.current?.focus()}>Enfocar</button>
+<button onClick={() => endRef.current?.scrollIntoView({ block: "nearest" })}>Ir al final</button>
+<li ref={endRef}>Entrada 20</li>
+```
+
+<Live hint="prueba los dos botones">
+  <FocusAndScroll />
+</Live>
+
+</Example>
+
+<SayIt>
+  To reach a DOM node I pass a ref to the element's ref attribute; React sets current to the node
+  after it mounts and back to null when it unmounts. I only do it for things props can't express,
+  like focus, scroll or measuring.
+</SayIt>
+
+## ¿Qué era forwardRef? ¿Hace falta en React 19?
+
+Antes de React 19, `ref` era una prop **especial**: React la quitaba de las props, así que un componente función no podía recibirla. Para pasar un ref "a través" de tu componente hasta un `<input>` interno había que envolverlo en `forwardRef`.
+
+**En React 19, `ref` es una prop normal** en los componentes función. Basta con recibirla y pasarla. `forwardRef` sigue funcionando, pero ya no se necesita y React planea deprecarlo.
+
+<Compare>
+<Bad>
+
+```tsx
+// Antes de React 19
+const TextInput = forwardRef<HTMLInputElement, { label: string }>(function TextInput(
+  { label },
+  ref,
+) {
+  return (
+    <label>
+      {label} <input ref={ref} />
+    </label>
+  );
+});
+```
+
+</Bad>
+<Good>
+
+```tsx
+// React 19: ref es una prop más
+function TextInput({ ref, label }: { ref?: Ref<HTMLInputElement>; label: string }) {
+  return (
+    <label>
+      {label} <input ref={ref} />
+    </label>
+  );
+}
+```
+
+</Good>
+</Compare>
+
+<Example title="el padre enfoca el input del hijo">
+
+```tsx
+const inputRef = useRef<HTMLInputElement>(null);
+<TextInput ref={inputRef} label="Horas" />
+<button onClick={() => inputRef.current?.focus()}>Enfocar el input del hijo</button>
+```
+
+<Live>
+  <RefAsPropDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  forwardRef existed because ref wasn't passed to function components as a prop. Since React 19 ref
+  is a regular prop, so I just accept it and forward it to the element; forwardRef is only needed in
+  older code.
+</SayIt>
+
+## ¿Para qué sirve useImperativeHandle?
+
+Cuando pasas un ref directo al `<input>`, el padre recibe **el nodo completo**: puede cambiarle estilos, el valor, cualquier cosa. A veces quieres exponer una **API pequeña y controlada**.
+
+`useImperativeHandle(ref, () => api)` hace que lo que el padre ve en `ref.current` sea el objeto que tú devuelves, no el nodo del DOM.
+
+Es para casos puntuales (focus, scroll, play/pause de un video, abrir un editor). Si te encuentras exponiendo `open()` y `close()` de un modal, normalmente es mejor una prop `isOpen`: lo declarativo es más fácil de seguir.
+
+<Example title="un buscador que solo expone focus() y clear()">
+
+```tsx
+type SearchHandle = { focus: () => void; clear: () => void };
+
+function SearchBox({ ref }: { ref?: Ref<SearchHandle> }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => inputRef.current?.focus(),
+    clear: () => { if (inputRef.current) inputRef.current.value = ""; },
+  }));
+
+  return <input ref={inputRef} />;
+}
+
+// en el padre
+const searchRef = useRef<SearchHandle>(null);
+<SearchBox ref={searchRef} />
+<button onClick={() => searchRef.current?.clear()}>clear()</button>
+```
+
+<Live hint="escribe algo y usa los botones">
+  <ImperativeDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  useImperativeHandle customizes what a parent gets through a ref. Instead of the whole DOM node I
+  expose a small API like focus and clear. I use it sparingly, because props are usually the
+  clearer, declarative option.
+</SayIt>
+
+## Callback refs (y su cleanup en React 19)
+
+En lugar de un objeto, `ref` puede recibir una **función**. React la llama con el nodo cuando lo monta. Sirve cuando necesitas hacer algo justo en ese momento (medir, observar) o cuando el número de nodos es dinámico (un ref por elemento de una lista).
+
+En React 19 el callback puede **devolver una función de cleanup**, igual que un efecto: React la llama cuando el nodo se quita. Antes, React llamaba al callback con `null`.
+
+<Example title="observar el tamaño de un nodo con ResizeObserver">
+
+```tsx
+const measureRef = useCallback((node: HTMLDivElement) => {
+  const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width));
+  observer.observe(node);
+  return () => observer.disconnect(); // cleanup al quitar el nodo (React 19)
+}, []);
+
+<div ref={measureRef} />;
+```
+
+<Live hint="arrastra la esquina inferior derecha de la caja; luego quítala">
+  <CallbackRefDemo />
+</Live>
+
+</Example>
+
+<Pitfall title="Callback inline">
+  Si el callback es una función nueva en cada render, React hace cleanup y lo vuelve a llamar **en
+  cada render**. Aquí sería un bucle: observar dispara `setWidth`, que re-renderiza, que crea otro
+  callback, que vuelve a observar… Por eso va en `useCallback` (o fuera del componente).
+</Pitfall>

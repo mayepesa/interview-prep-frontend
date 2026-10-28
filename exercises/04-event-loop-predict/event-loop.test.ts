@@ -7,6 +7,9 @@ const { predictionA, predictionB, predictionC } = (
   process.env.SOLUTIONS ? solution : starter
 ) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 async function run(snippet: (log: (msg: string) => void) => Promise<void>) {
   const out: string[] = [];
   await snippet((msg) => out.push(msg));
@@ -14,7 +17,7 @@ async function run(snippet: (log: (msg: string) => void) => Promise<void>) {
   return out;
 }
 
-describe("04 · event loop", () => {
+suite("04 · event loop", () => {
   it("snippet A", async () => expect(predictionA).toEqual(await run(snippetA)));
   it("snippet B", async () => expect(predictionB).toEqual(await run(snippetB)));
   it("snippet C", async () => expect(predictionC).toEqual(await run(snippetC)));

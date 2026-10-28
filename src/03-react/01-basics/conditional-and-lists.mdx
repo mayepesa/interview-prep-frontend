@@ -1,0 +1,375 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  ConditionalStylesDemo,
+  EarlyReturnDemo,
+  InlineConditionsDemo,
+  ProjectListDemo,
+  TaskListDemo,
+  ZeroPitfallDemo,
+} from "./conditional-and-lists.examples";
+
+export const meta = {
+  title: "Condicionales, listas y keys",
+  section: "react-basics",
+  order: 40,
+  summary:
+    "Cómo mostrar u ocultar UI según el estado, por qué no hay if dentro del JSX, cómo renderizar listas con map y para qué sirve la key (y por qué el índice puede romper tu app).",
+};
+
+## ¿Qué es el renderizado condicional?
+
+**Renderizado condicional** es mostrar una UI u otra según una condición: si está cargando, un spinner; si hubo error, un mensaje; si no hay datos, un estado vacío; si todo está bien, la lista.
+
+En React no existe una sintaxis especial (como `v-if` en Vue o `@if` en Angular): se usa **JavaScript normal**. Las herramientas son:
+
+| Técnica                     | Cuándo usarla                                                                    |
+| --------------------------- | -------------------------------------------------------------------------------- |
+| `if` + `return` temprano    | Casos que cambian **todo** lo que devuelve el componente (loading, error, vacío) |
+| Ternario `cond ? A : B`     | Elegir entre **dos** opciones dentro del JSX                                     |
+| `cond && <A />`             | Mostrar algo **o nada**                                                          |
+| Variable antes del `return` | Lógica más larga que no quieres meter en el JSX                                  |
+| `return null`               | El componente no debe mostrar nada                                               |
+
+### Return temprano
+
+Es la forma más legible para los estados de una petición: primero los casos especiales, al final el caso "feliz". Cada `if` corta la función y el resto del código no tiene que preocuparse por ellos.
+
+<Example title="los estados de una petición con return temprano">
+
+```tsx
+function ResultsView({ loading, error, items }: Props) {
+  if (loading) return <p>Cargando…</p>;
+  if (error) return <p role="alert">Error: {error}</p>;
+  if (items.length === 0) return <p>Sin resultados</p>;
+
+  return (
+    <ul>
+      {items.map((item) => (
+        <li key={item}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+```
+
+<Live hint="cambia el estado de la petición">
+  <EarlyReturnDemo />
+</Live>
+
+</Example>
+
+<Pitfall>
+  Los hooks tienen que llamarse **antes** de cualquier `return` temprano. Si pones un `useState`
+  después de un `if (loading) return …`, en unos renders se llama y en otros no, y React rompe con
+  "Rendered more hooks than during the previous render".
+</Pitfall>
+
+<SayIt>
+  Conditional rendering is just JavaScript: I use early returns for loading, error and empty states,
+  a ternary to choose between two options, and logical AND to show something or nothing. All hooks
+  go before any early return.
+</SayIt>
+
+## ¿Cuándo usar && y cuándo un ternario?
+
+- **`&&`** muestra el elemento si la condición es verdadera y **nada** si es falsa: `{isAdmin && <AdminBadge />}`. Funciona porque `false`, `null` y `undefined` no se renderizan.
+- **Ternario** cuando hay **dos** resultados posibles: `{unread > 0 ? <Badge /> : <p>Estás al día</p>}`. También sirve con `null` en una rama.
+
+Evita ternarios anidados (`a ? x : b ? y : z`) dentro del JSX: se vuelven ilegibles. En ese caso, saca la lógica a una variable, a un componente o a un objeto de mapeo (`const views = { week: <Week />, month: <Month /> }`).
+
+<Example title="&& y ternario en el mismo componente">
+
+```tsx
+<p>Hola, Maria {isAdmin && <strong>(admin)</strong>}</p>
+<p>{unread > 0 ? `Tienes ${unread} notificaciones` : "Estás al día"}</p>
+```
+
+<Live>
+  <InlineConditionsDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  I use logical AND when I want to render something or nothing, and a ternary when there are two
+  alternatives. If the conditions get nested, I move the logic into a variable or a small component
+  to keep the JSX readable.
+</SayIt>
+
+## ¿Por qué `{count && …}` muestra un 0?
+
+`a && b` en JavaScript **no devuelve un booleano**: devuelve `a` si `a` es falsy, o `b` en caso contrario. Si `count` es `0`, la expresión devuelve **`0`**, y React **sí renderiza números**, incluido el 0. Resultado: un "0" suelto en la pantalla (en React Native, incluso un error porque el texto no está dentro de `<Text>`).
+
+Los únicos valores que React ignora son `true`, `false`, `null`, `undefined` (y strings vacíos no muestran nada visible). `0` y `NaN` sí aparecen.
+
+La solución es que el lado izquierdo sea **siempre un booleano**:
+
+- `{count > 0 && …}`
+- `{items.length > 0 && …}`
+- `{Boolean(count) && …}` o `{!!count && …}`
+- o un ternario con `null`.
+
+<Example title="la trampa del 0">
+
+<Compare>
+<Bad>
+
+```tsx
+{
+  count && <p>{count} tareas pendientes</p>;
+}
+// count = 0 → renderiza "0"
+```
+
+</Bad>
+<Good>
+
+```tsx
+{
+  count > 0 && <p>{count} tareas pendientes</p>;
+}
+// count = 0 → no renderiza nada
+```
+
+</Good>
+</Compare>
+
+<Live hint="con count en 0, la caja roja muestra un 0 suelto">
+  <ZeroPitfallDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  Logical AND returns the left value when it's falsy, and React renders the number zero. So with
+  count equal to zero, count AND something prints a 0. I always make the left side a real boolean,
+  like count greater than zero.
+</SayIt>
+
+## ¿Por qué no podemos usar un if dentro del JSX?
+
+Porque **JSX solo acepta expresiones**, y `if` es una **sentencia**.
+
+- Una **expresión** produce un valor: `count + 1`, `isOpen ? "a" : "b"`, `items.map(…)`, `fn()`.
+- Una **sentencia** ejecuta una acción pero no produce un valor: `if`, `for`, `while`, `const x = …`.
+
+Recuerda que JSX se compila a llamadas de función: `<p>{algo}</p>` se convierte en `jsx("p", { children: algo })`. Lo que va entre llaves termina siendo **un argumento de una función**, y no puedes pasar un `if` como argumento, igual que no puedes escribir `console.log(if (x) { … })`.
+
+Alternativas:
+
+1. Ternario o `&&` dentro del JSX.
+2. Calcular el contenido en una **variable** antes del `return` (ahí sí puedes usar `if`, `switch`).
+3. Extraer un **componente** que use return temprano.
+
+<Example title="if fuera del JSX, en una variable">
+
+<Compare>
+<Bad>
+
+```tsx
+return (
+  <div>
+    {if (isLoading) { <Spinner /> }} {/* error de sintaxis */}
+  </div>
+);
+```
+
+</Bad>
+<Good>
+
+```tsx
+let content;
+if (isLoading) content = <Spinner />;
+else if (error) content = <ErrorMessage error={error} />;
+else content = <Table rows={rows} />;
+
+return <div className="panel">{content}</div>;
+```
+
+</Good>
+</Compare>
+
+</Example>
+
+<SayIt>
+  JSX compiles to function calls, so whatever goes inside curly braces must be an expression that
+  produces a value. An if is a statement, not an expression. I use a ternary or logical AND inline,
+  or compute the content in a variable before the return.
+</SayIt>
+
+## ¿Qué es el renderizado de listas?
+
+Es generar un elemento de JSX por cada ítem de un array. Se hace con **`Array.prototype.map`**, que devuelve un **nuevo array de elementos**, y React sabe renderizar arrays.
+
+Patrón típico:
+
+1. **Filtrar / ordenar** los datos (`filter`, `toSorted`) → estado derivado, se calcula en el render.
+2. **Mapear** cada ítem a JSX.
+3. Darle a cada elemento una **`key`** única y estable.
+
+¿Por qué `map` y no `forEach`? Porque `forEach` devuelve `undefined`: no produce nada que React pueda renderizar.
+
+<Example title="filtrar y mapear">
+
+```tsx
+const visible = onlyBillable ? projects.filter((p) => p.billable) : projects;
+
+return (
+  <ul>
+    {visible.map((project) => (
+      <li key={project.id}>
+        {project.name} · {project.hours} h
+      </li>
+    ))}
+  </ul>
+);
+```
+
+<Live hint="activa el filtro">
+  <ProjectListDemo />
+</Live>
+
+</Example>
+
+<Pitfall>
+  Con llaves en la arrow function necesitas `return`: `items.map((i) => { return <li key={i.id}>…</li>; })`.
+  Si escribes `items.map((i) => { <li>…</li> })` sin `return`, devuelve `undefined` y la lista sale vacía. Con
+  paréntesis el retorno es implícito.
+</Pitfall>
+
+<SayIt>
+  To render a list I map over the array and return one element per item, each with a stable key.
+  Filtering or sorting happens right before the map as derived data. map works because it returns a
+  new array of elements; forEach returns nothing.
+</SayIt>
+
+## ¿Cuál es el propósito de la prop key?
+
+La **`key`** le da a cada elemento de una lista una **identidad** que se mantiene entre renders. Durante la reconciliación, React compara los hijos por key: así sabe si un ítem es **el mismo** que antes (y conserva su estado y su nodo del DOM), si es **nuevo** (lo monta) o si **desapareció** (lo desmonta).
+
+Sin keys, React compara por **posición**. Si insertas un ítem al principio, cree que _todos_ cambiaron.
+
+Reglas de la key:
+
+- **Única entre hermanos** (no en toda la app). Dos listas distintas pueden repetir keys.
+- **Estable**: el mismo ítem debe tener la misma key en cada render.
+- Idealmente viene **de los datos**: un `id` de la base de datos, un slug, un UUID creado al momento de crear el ítem.
+- **No llega como prop** al componente: si el hijo necesita el id, pásalo aparte (`<Row key={t.id} id={t.id} />`).
+- Va en el elemento que devuelve el `map`, no en un elemento interno.
+
+Si te olvidas la key, React avisa en consola: _"Each child in a list should have a unique key prop"_.
+
+<Pitfall title="Nunca generes la key durante el render">
+  `key={Math.random()}` o `key={crypto.randomUUID()}` dentro del `map` crean una key **nueva en cada
+  render**: React desmonta y vuelve a montar todos los ítems, pierde el estado y el foco, y es muy
+  lento. Genera el id cuando **creas** el dato, no cuando lo pintas.
+</Pitfall>
+
+<SayIt>
+  Keys give list items a stable identity across renders. React matches children by key, so it knows
+  which item moved, which is new and which was removed, and it keeps the right state on the right
+  item. Keys should be unique among siblings and stable, ideally an id from the data.
+</SayIt>
+
+## ¿Por qué es mala práctica usar el index como key?
+
+El índice identifica una **posición**, no un **ítem**. Mientras la lista nunca cambie de orden, funciona; pero si **insertas al inicio, borras, reordenas o filtras**, el ítem que estaba en la posición 0 ahora está en la 1, y React asocia el estado de la posición 0 (un input, un checkbox, un componente con estado propio) al ítem **equivocado**.
+
+Síntomas típicos:
+
+- El texto de un input "salta" a otra fila.
+- Un checkbox marcado aparece en otra tarea.
+- Animaciones o foco en el elemento incorrecto.
+- Más trabajo en el DOM: React actualiza el contenido de todas las filas en vez de insertar una.
+
+**Cuándo el índice es aceptable**: la lista es estática (nunca se reordena, filtra ni se insertan ítems en medio) y los ítems no tienen estado propio. Aun así, si hay un id disponible, úsalo.
+
+<Example title="index como key vs id estable">
+
+<Compare>
+<Bad>
+
+```tsx
+{
+  tasks.map((task, index) => <TaskRow key={index} task={task} />);
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+{
+  tasks.map((task) => <TaskRow key={task.id} task={task} />);
+}
+```
+
+</Good>
+</Compare>
+
+<Live hint="index como key: escribe una nota en 'Revisar PR' y agrega una tarea al inicio">
+  <TaskListDemo indexAsKey />
+</Live>
+
+<Live hint="id como key: repite lo mismo, la nota se queda con su tarea">
+  <TaskListDemo indexAsKey={false} />
+</Live>
+
+</Example>
+
+Con el índice, la nota se queda en la **posición 0**, que ahora es "Nueva 4": React reutilizó la fila por su posición. Con el id, React sabe que "Revisar PR" solo se movió hacia abajo.
+
+<SayIt>
+  The index identifies a position, not an item. When I insert, remove or reorder items, React reuses
+  components by position, so local state like an input's value ends up on the wrong row. I use a
+  stable id from the data; the index is only acceptable for static lists without state.
+</SayIt>
+
+## ¿Cómo aplicar estilos condicionales?
+
+Hay tres herramientas principales:
+
+1. **`className` condicional**: la opción preferida, porque el estilo vive en CSS (o CSS Modules, Tailwind). Se arma con un template literal o con una utilidad como **`clsx`**.
+2. **`style` con un objeto**: para valores **dinámicos** que no conoces de antemano (un ancho en %, un color que viene de la API). Las propiedades van en camelCase.
+3. **Atributos `data-*` o `aria-*`**: `data-priority="high"` o `aria-pressed`, y el CSS los selecciona con `[data-priority="high"]`. Bueno para estados que también tienen significado de accesibilidad.
+
+```tsx
+// template literal
+<p className={`task ${done ? "task--done" : ""}`} />
+
+// clsx: más legible con varias condiciones
+<p className={clsx("task", { "task--done": done, "task--urgent": priority === "high" })} />
+```
+
+<Example title="className, style y data-attribute">
+
+```tsx
+<p
+  className={["task", done && "task--done"].filter(Boolean).join(" ")}
+  data-priority={priority}
+  style={{
+    borderLeft: `4px solid ${PRIORITY_COLORS[priority]}`,
+    textDecoration: done ? "line-through" : undefined,
+  }}
+>
+  Preparar demo para el cliente
+</p>
+```
+
+<Live hint="cambia la prioridad y marca la tarea como hecha">
+  <ConditionalStylesDemo />
+</Live>
+
+</Example>
+
+<Tip>
+  Prefiere clases para los estados conocidos (hecho, activo, error) y deja `style` para valores
+  calculados. Los estilos en línea no admiten pseudo-clases (`:hover`) ni media queries, y se
+  repiten en cada nodo.
+</Tip>
+
+<SayIt>
+  For conditional styles I prefer toggling class names, often with a helper like clsx, so the styles
+  stay in CSS. I use the style prop for truly dynamic values like a computed width, and data or aria
+  attributes when the state also has semantic meaning.
+</SayIt>

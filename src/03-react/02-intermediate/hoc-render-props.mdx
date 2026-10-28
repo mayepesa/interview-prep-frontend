@@ -1,0 +1,245 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  ClassCounter,
+  FunctionCounter,
+  HocDemo,
+  HookDemo,
+  RenderPropDemo,
+} from "./hoc-render-props.examples";
+
+export const meta = {
+  title: "HOC y render props",
+  section: "react-intermediate",
+  order: 90,
+  summary:
+    "Los dos patrones para compartir lógica antes de los hooks, cómo se ven, qué problemas tenían, por qué hoy se usan hooks y qué diferencia a los componentes de clase de los funcionales.",
+};
+
+## El problema: compartir lógica entre componentes
+
+Imagina que varios componentes necesitan saber dónde está el puntero dentro de una caja. La **UI** es distinta en cada uno, pero la **lógica** (escuchar `pointermove`, calcular `x` e `y`, guardarlas en el estado) es la misma.
+
+Con componentes de clase no había forma de extraer lógica con estado a una función. Se inventaron dos patrones basados en componentes: **HOC** y **render props**. Los tres ejemplos de esta página comparten exactamente la misma lógica:
+
+```tsx
+function usePointer() {
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const onPointerMove = (e: PointerEvent<HTMLElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setPosition({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+  };
+  return { position, onPointerMove };
+}
+```
+
+## ¿Qué es un High Order Component (HOC)?
+
+Un **HOC** es una **función que recibe un componente y devuelve un componente nuevo** que lo envuelve y le **inyecta props** extra. El nombre viene de las _higher-order functions_ (funciones que reciben o devuelven funciones).
+
+Convenciones:
+
+- El nombre empieza con `with` (`withRouter`, `withAuth`, `connect` de Redux era un HOC).
+- Se pone un `displayName` para que React DevTools muestre `withPointer(Coordinates)` y no un componente anónimo.
+- Se crea **fuera** del render: `withPointer(X)` dentro de un componente crearía un tipo nuevo en cada render y desmontaría todo.
+
+<Example title="withPointer inyecta la prop position">
+
+```tsx
+function withPointer<P extends object>(Wrapped: ComponentType<P & { position: Point }>) {
+  function WithPointer(props: P) {
+    const { position, onPointerMove } = usePointer();
+    return (
+      <div onPointerMove={onPointerMove}>
+        <Wrapped {...props} position={position} />
+      </div>
+    );
+  }
+  WithPointer.displayName = `withPointer(${Wrapped.displayName ?? Wrapped.name})`;
+  return WithPointer;
+}
+
+function Coordinates({ position, label }: { position: Point; label: string }) {
+  return (
+    <span>
+      {label}: x = {position.x}, y = {position.y}
+    </span>
+  );
+}
+
+const CoordinatesWithPointer = withPointer<{ label: string }>(Coordinates);
+<CoordinatesWithPointer label="HOC" />;
+```
+
+<Live hint="mueve el puntero dentro de la caja">
+  <HocDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  A higher-order component is a function that takes a component and returns a new one that wraps it
+  and injects extra props. It was the main way to share logic with class components, like connect in
+  Redux or withRouter.
+</SayIt>
+
+## ¿Qué son las render props?
+
+Una **render prop** es una prop cuyo valor es una **función que devuelve JSX**. El componente hace la lógica y **llama a esa función** con los datos, dejando que quien lo usa decida qué pintar. Lo más común es usar `children` como esa función.
+
+Ventaja frente al HOC: es explícito de dónde viene cada dato (es el argumento de la función) y no hay choque de nombres de props.
+
+<Example title="PointerTracker con children como función">
+
+```tsx
+function PointerTracker({ children }: { children: (position: Point) => ReactNode }) {
+  const { position, onPointerMove } = usePointer();
+  return <div onPointerMove={onPointerMove}>{children(position)}</div>;
+}
+
+<PointerTracker>
+  {({ x, y }) => (
+    <span>
+      {x > 150 ? "derecha" : "izquierda"} ({x}, {y})
+    </span>
+  )}
+</PointerTracker>;
+```
+
+<Live hint="mueve el puntero de izquierda a derecha">
+  <RenderPropDemo />
+</Live>
+
+</Example>
+
+<Tip title="Todavía se ven">
+  Las render props siguen siendo útiles cuando un componente necesita **delegar el render** de una parte:
+  listas virtualizadas (`rowRenderer`), `<Formik>`, o el `<Controller render={…}>` de React Hook Form.
+</Tip>
+
+<SayIt>
+  A render prop is a prop that is a function returning JSX. The component runs the logic and calls
+  the function with its data, so the caller decides what to render. It's more explicit than a HOC,
+  and it's still useful when a component needs to delegate rendering.
+</SayIt>
+
+## ¿Por qué hoy se usan hooks?
+
+Con los hooks, la misma lógica se usa **llamando a una función**, sin componentes envoltorio:
+
+<Example title="la misma lógica con un custom hook">
+
+```tsx
+function HookDemo() {
+  const { position, onPointerMove } = usePointer();
+  return (
+    <div onPointerMove={onPointerMove}>
+      x = {position.x}, y = {position.y}
+    </div>
+  );
+}
+```
+
+<Live>
+  <HookDemo />
+</Live>
+
+</Example>
+
+Los problemas que tenían HOC y render props, y cómo los resuelven los hooks:
+
+| Problema                                                 | HOC                                 | Render props          | Hooks                      |
+| -------------------------------------------------------- | ----------------------------------- | --------------------- | -------------------------- |
+| **Wrapper hell**: árbol lleno de envoltorios en DevTools | Sí                                  | Sí                    | No: no agregan componentes |
+| **Origen de los datos**: ¿de dónde sale esta prop?       | Implícito                           | Explícito             | Explícito (una variable)   |
+| **Choque de nombres**: dos HOCs inyectan `data`          | Sí                                  | No                    | No: tú eliges el nombre    |
+| **Anidar varias lógicas**                                | `withA(withB(withC(X)))`            | Pirámide de funciones | Una línea por hook         |
+| **Tipar en TypeScript**                                  | Difícil (genéricos, props omitidas) | Aceptable             | Simple                     |
+
+<Compare>
+<Bad>
+
+```tsx
+<Auth>
+  {(user) => (
+    <Theme>
+      {(theme) => <Pointer>{(pos) => <Card user={user} theme={theme} pos={pos} />}</Pointer>}
+    </Theme>
+  )}
+</Auth>
+```
+
+</Bad>
+<Good>
+
+```tsx
+const user = useAuth();
+const theme = useTheme();
+const { position } = usePointer();
+return <Card user={user} theme={theme} pos={position} />;
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  HOCs and render props share logic by adding components, which leads to wrapper hell, implicit
+  props and name collisions. Hooks share the same logic with a plain function call, so the code is
+  flatter, explicit and easy to type. I still see HOCs in older codebases and some libraries.
+</SayIt>
+
+## ¿Qué son mejores, los componentes de clase o los funcionales?
+
+Para código nuevo, **los funcionales con hooks**. Las clases siguen funcionando y React no planea quitarlas, pero:
+
+|                                 | Clase                                                                           | Función + hooks                                        |
+| ------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Estado                          | `this.state` + `this.setState` (mezcla objetos)                                 | `useState` / `useReducer` por valor                    |
+| Efectos                         | Repartidos en `componentDidMount`, `componentDidUpdate`, `componentWillUnmount` | `useEffect` agrupa setup y cleanup por responsabilidad |
+| `this`                          | Hay que cuidar el binding de los métodos                                        | No existe                                              |
+| Reutilizar lógica               | HOC / render props                                                              | Custom hooks                                           |
+| Funciones nuevas de React       | Muchas no están: `use`, Actions, `useOptimistic`…                               | Sí                                                     |
+| React Compiler                  | No las optimiza                                                                 | Sí                                                     |
+| Cuándo siguen siendo necesarias | **Error Boundaries**                                                            |                                                        |
+
+<Example title="el mismo contador en clase y en función">
+
+<Compare>
+<Bad>
+
+```tsx
+class Counter extends Component<{ step: number }, { count: number }> {
+  state = { count: 0 };
+  increment = () => this.setState((s) => ({ count: s.count + this.props.step }));
+  render() {
+    return <button onClick={this.increment}>{this.state.count}</button>;
+  }
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function Counter({ step }: { step: number }) {
+  const [count, setCount] = useState(0);
+  return <button onClick={() => setCount((c) => c + step)}>{count}</button>;
+}
+```
+
+</Good>
+</Compare>
+
+<Live>
+  <div className="row">
+    <ClassCounter step={1} />
+    <FunctionCounter step={1} />
+  </div>
+</Live>
+
+</Example>
+
+<SayIt>
+  For new code I write function components with hooks: less code, no this binding, logic grouped by
+  concern and reusable through custom hooks, and all new React features target them. Classes still
+  work, and I'd still need one for an error boundary.
+</SayIt>

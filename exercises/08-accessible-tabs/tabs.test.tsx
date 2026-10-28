@@ -6,13 +6,16 @@ import * as starter from "./starter";
 
 const { Tabs } = (process.env.SOLUTIONS ? solution : starter) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 const tabs = [
   { id: "day", label: "Day", content: "Daily view" },
   { id: "week", label: "Week", content: "Weekly view" },
   { id: "month", label: "Month", content: "Monthly view" },
 ];
 
-describe("08 · accessible tabs", () => {
+suite("08 · accessible tabs", () => {
   it("starts on the first tab with correct ARIA", () => {
     render(<Tabs tabs={tabs} />);
     const [day, week] = screen.getAllByRole("tab");

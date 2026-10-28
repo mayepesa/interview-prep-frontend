@@ -1,0 +1,152 @@
+import { Bad, Compare, Example, Good, Pitfall, SayIt, Tip } from "../app/study";
+import { CodeFile } from "./CodeFile";
+import before from "./before.tsx?raw";
+import after from "./after.tsx?raw";
+
+export const meta = {
+  title: "Code review",
+  section: "code-review",
+  order: 10,
+  summary:
+    "Qué revisar en un pull request, en qué orden, cómo escribir comentarios útiles y un PR real con 13 problemas para practicar en voz alta.",
+};
+
+## ¿Para qué sirve un code review?
+
+Un code review es cuando otra persona del equipo lee tu cambio (un _pull request_, PR) antes de que se mezcle con la rama principal. Sirve para cuatro cosas:
+
+1. **Encontrar bugs** antes de que lleguen a producción, cuando arreglarlos es barato.
+2. **Mantener el código consistente**: mismos patrones, mismos nombres, misma arquitectura.
+3. **Compartir conocimiento**: al menos dos personas conocen cada parte del código.
+4. **Enseñar y aprender**: los comentarios son la forma más común de mentoría en un equipo.
+
+No es para demostrar quién sabe más ni para imponer gustos personales. Lo que se puede automatizar (formato, imports ordenados, reglas de lint, tipos) lo hacen Prettier, ESLint, TypeScript y el CI, para que las personas se concentren en lo que una máquina no ve.
+
+<SayIt>
+  Code review catches bugs early, keeps the codebase consistent and spreads knowledge across the
+  team. Anything a tool can check, like formatting or lint rules, should be automated so reviewers
+  focus on logic, design and edge cases.
+</SayIt>
+
+## ¿Qué revisas y en qué orden?
+
+Un orden que funciona, de lo más grave a lo más cosmético:
+
+| #   | Pregunta                          | Ejemplos                                                                                                 |
+| --- | --------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| 1   | ¿Hace lo que pide el ticket?      | Lee la descripción del PR y el ticket antes que el código.                                               |
+| 2   | ¿Es seguro?                       | Secretos en el código, XSS, datos del usuario sin validar.                                               |
+| 3   | ¿Es correcto?                     | Casos borde (lista vacía, error de red, usuario sin permisos), race conditions, dependencias de efectos. |
+| 4   | ¿Rinde bien?                      | Re-renders innecesarios, loops anidados sobre datos grandes, peticiones de más, memory leaks.            |
+| 5   | ¿Es accesible?                    | Elementos nativos, labels, teclado, foco.                                                                |
+| 6   | ¿Se entiende y se puede mantener? | Nombres, tamaño de funciones, tipos, duplicación.                                                        |
+| 7   | ¿Tiene tests?                     | Que cubran el comportamiento nuevo y los casos borde, no la implementación.                              |
+
+<Tip title="PRs pequeños">
+  Un PR de 50 líneas recibe un review cuidadoso; uno de 2 000 recibe un "LGTM". Si escribes el PR,
+  mantenlo pequeño, con una descripción clara, capturas si cambia la UI y cómo probarlo.
+</Tip>
+
+<SayIt>
+  I first check that the change does what the ticket asks. Then security and correctness, especially
+  edge cases and async issues, then performance and accessibility, and finally readability and
+  tests.
+</SayIt>
+
+## ¿Cómo escribes un buen comentario?
+
+Un buen comentario es **específico, explica el porqué y propone algo**. También deja claro si **bloquea** el merge o es una sugerencia.
+
+<Compare>
+<Bad>
+
+```text
+Esto está mal.
+```
+
+```text
+¿Por qué no usaste useMemo?
+```
+
+</Bad>
+<Good>
+
+```text
+🔴 Blocking: this key ends up in the bundle, so anyone can
+read it in DevTools. Could we move the call to our backend?
+```
+
+```text
+🟡 Non-blocking: `total` can be derived during render
+instead of kept in state; that saves an effect and a render.
+```
+
+</Good>
+</Compare>
+
+Prácticas que ayudan:
+
+- **Pregunta antes de afirmar** cuando no estás segura: _"What happens if `userId` changes while the request is in flight?"_
+- **Usa etiquetas de severidad**: blocking / non-blocking / nit (detalle menor) / question.
+- **Reconoce lo bueno**: _"Nice catch on the empty state."_
+- **Si una discusión pasa de tres idas y vueltas, propón una llamada corta** y deja por escrito la decisión.
+- **Revisa el código, no a la persona**: "este efecto no tiene cleanup", no "olvidaste el cleanup".
+
+<SayIt>
+  I make comments specific: what the problem is, why it matters, and a concrete suggestion. I label
+  them as blocking or non-blocking, I ask questions when I'm not sure, and I move long discussions
+  to a quick call.
+</SayIt>
+
+## Práctica: revisa este PR
+
+En una entrevista técnica es común que te muestren código y te pidan revisarlo en voz alta. Este componente compila y "funciona", pero tiene al menos 13 problemas.
+
+**Ejercicio:** pon un timer de 10 minutos, lee el código y anota todo lo que comentarías, con su severidad. Después compara con la lista de abajo.
+
+<Example title="PR #142 · Add weekly hours widget">
+
+<CodeFile name="src/09-code-review/before.tsx" code={before} />
+
+</Example>
+
+## Los comentarios del review
+
+| #   | Línea     | Severidad       | Problema                                                                                                      | Sugerencia                                                               |
+| --- | --------- | --------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| 1   | 7, 16     | 🔴 Blocking     | Una clave secreta (`sk_live_…`) en el código del front: termina en el bundle y cualquiera la ve.              | La llamada que usa la clave va al backend; el front llama a nuestra API. |
+| 2   | 42        | 🔴 Blocking     | `dangerouslySetInnerHTML` con texto del usuario: XSS.                                                         | Renderizar como texto, o sanitizar con DOMPurify.                        |
+| 3   | 22        | 🟠 Importante   | El efecto usa `props.userId`, pero las dependencias están vacías: si cambia el usuario, muestra datos viejos. | `[userId]` en las dependencias.                                          |
+| 4   | 14–22     | 🟠 Importante   | Sin cleanup: race condition si cambia `userId`, y `setState` después de desmontar.                            | `AbortController` y `return () => controller.abort()`.                   |
+| 5   | 17        | 🟠 Importante   | No revisa `res.ok` ni maneja errores: si falla, se queda en "Loading…" para siempre.                          | Revisar `res.ok`, `.catch` y un estado de error visible.                 |
+| 6   | 33        | 🟠 Importante   | Un listener de `resize` que nunca se quita: memory leak (y un `console.log` olvidado).                        | Quitar el efecto, o devolver el cleanup.                                 |
+| 7   | 11, 24–30 | 🟡 Non-blocking | `total` es estado derivado: un efecto y un render de más.                                                     | `const total = entries.reduce(…)` en el render.                          |
+| 8   | 39        | 🟡 Non-blocking | `{entries.length && …}` pinta un `0` cuando no hay entradas.                                                  | `entries.length > 0 && …`                                                |
+| 9   | 40–41     | 🟡 Non-blocking | `key={i}`: si la lista cambia de orden, React reutiliza mal los elementos.                                    | `key={entry.id}`.                                                        |
+| 10  | 9–10      | 🟡 Non-blocking | `any` en las props y en los datos: se pierde todo el tipado.                                                  | Tipar `Props` y validar la respuesta de la API.                          |
+| 11  | 41        | 🟡 Non-blocking | Un `div` con `onClick`: no recibe foco ni funciona con teclado.                                               | Un `button`.                                                             |
+| 12  | 10–12     | 🟡 Non-blocking | `loading`, `entries` y el error son estados separados que pueden contradecirse.                               | Una unión discriminada por `status`.                                     |
+| 13  | 16        | ⚪ Nit          | URL armada con `+` y sin `encodeURIComponent`.                                                                | Template literal y encoding.                                             |
+
+<Pitfall title="Trampa de entrevista">
+  Es fácil quedarse en los detalles visibles (`key={i}`, `any`) y no ver lo grave. Empieza siempre
+  por seguridad y correctitud: la clave secreta y el XSS bloquean el merge; el nombre de una
+  variable no.
+</Pitfall>
+
+## La versión corregida
+
+Así quedaría el componente después de aplicar los comentarios. Fíjate en tres decisiones: un solo estado con `status` (no hay combinaciones imposibles), el total calculado en el render, y la validación de lo que llega de la red.
+
+<Example title="después del review">
+
+<CodeFile name="src/09-code-review/after.tsx" code={after} />
+
+</Example>
+
+<SayIt>
+  Reviewing this PR, I'd block on two things first: the secret key in the frontend bundle and the
+  unsanitized HTML, which is an XSS risk. Then I'd flag the effect: missing dependency, no cleanup
+  and no error handling. The rest are non-blocking: derived state, the zero rendering, index keys,
+  types and a div used as a button.
+</SayIt>

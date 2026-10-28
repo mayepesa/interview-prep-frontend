@@ -1,0 +1,271 @@
+import { Example, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../app/study";
+
+export const meta = {
+  title: "Big-O",
+  section: "cs",
+  order: 10,
+  summary:
+    "Qué mide la notación Big-O, las complejidades más comunes con ejemplos de front end, tiempo vs memoria, cómo analizar un fragmento de código y la optimización clásica de cambiar un find por un Map.",
+};
+
+## ¿Qué mide la notación Big-O?
+
+**Big-O** describe **cómo crece** el tiempo (o la memoria) que necesita un algoritmo **cuando crece la entrada**. No mide segundos ni milisegundos, que dependen de la máquina: mide la **forma de la curva**.
+
+Si una función tarda 1 ms con 1 000 elementos, la pregunta de Big-O es: ¿qué pasa con 1 000 000?
+
+- Si es **O(n)** (lineal), tarda unas 1 000 veces más: ~1 s.
+- Si es **O(n²)** (cuadrática), tarda un millón de veces más: ~17 minutos.
+
+Reglas de la notación:
+
+- **`n`** es el tamaño de la entrada (largo del array, cantidad de nodos, caracteres del string).
+- **Se ignoran las constantes**: O(2n) es O(n). Recorrer un array dos veces sigue siendo lineal.
+- **Se queda el término dominante**: O(n² + n) es O(n²), porque con n grande el n² es todo lo que importa.
+- Normalmente se habla del **peor caso**: `find` es O(n) aunque a veces encuentre el elemento en la primera posición.
+
+En front end no te piden demostraciones matemáticas: te piden **reconocer** la complejidad de tu código y saber cuándo un loop anidado sobre datos grandes va a congelar la pantalla.
+
+<SayIt>
+  Big-O describes how the running time or memory of an algorithm grows as the input grows. It
+  ignores constants and keeps the dominant term, and usually describes the worst case. It's not
+  about milliseconds, it's about the shape of the curve.
+</SayIt>
+
+## ¿Cuáles son las complejidades más comunes?
+
+| Complejidad    | Nombre             | Si n se multiplica por 10… | Ejemplo en front end                                                   |
+| -------------- | ------------------ | -------------------------- | ---------------------------------------------------------------------- |
+| **O(1)**       | Constante          | no cambia                  | `map.get(id)`, `set.has(x)`, `obj[key]`, `arr[i]`, `arr.push(x)`       |
+| **O(log n)**   | Logarítmica        | suma un paso               | Búsqueda binaria en un array ordenado                                  |
+| **O(n)**       | Lineal             | ×10                        | `map`, `filter`, `find`, `includes`, `indexOf`, un `for`               |
+| **O(n log n)** | Lineal-logarítmica | algo más de ×10            | `arr.sort()` / `toSorted()`                                            |
+| **O(n²)**      | Cuadrática         | ×100                       | Un `find` o `includes` dentro de un `map`; comparar todos contra todos |
+| **O(2ⁿ)**      | Exponencial        | se vuelve imposible        | Fibonacci recursivo sin memoización; todos los subconjuntos            |
+
+Lo que conviene memorizar: **O(1) y O(log n) son excelentes, O(n) y O(n log n) son normales, O(n²) es sospechoso con datos grandes, O(2ⁿ) es inviable** salvo para n muy pequeño.
+
+<Example title="cuántos pasos da cada complejidad">
+
+```ts
+for (const n of [10, 100, 1_000, 10_000]) {
+  console.log(n, Math.log2(n), n * Math.log2(n), n * n);
+}
+```
+
+<Run
+  label="Comparar el crecimiento"
+  run={(log) => {
+    log("n        | log n | n log n   | n²");
+    for (const n of [10, 100, 1000, 10000, 100000]) {
+      const lg = Math.round(Math.log2(n));
+      const nlg = Math.round(n * Math.log2(n));
+      log(
+        `${String(n).padEnd(8)} | ${String(lg).padEnd(5)} | ${String(nlg).padEnd(9)} | ${(n * n).toLocaleString("en")}`,
+      );
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Constant and logarithmic are great, linear and n log n are normal, quadratic gets slow with large
+  inputs, and exponential is only feasible for tiny inputs. In front end the common ones are
+  constant lookups in a Map, linear array methods, n log n for sorting, and the accidental quadratic
+  of a find inside a map.
+</SayIt>
+
+## ¿Qué diferencia hay entre complejidad de tiempo y de espacio?
+
+- **Tiempo**: cuántas operaciones hace el algoritmo en función de `n`.
+- **Espacio**: cuánta memoria **extra** necesita, además de la entrada.
+
+Muchas veces **se intercambia una por la otra**: gastar memoria en un `Map` o un `Set` para no tener que buscar en un array una y otra vez. Ese es el truco más común en las entrevistas: pasar de O(n²) de tiempo con O(1) de espacio a O(n) de tiempo con O(n) de espacio.
+
+Algunos ejemplos:
+
+| Código                                         | Tiempo | Espacio extra                            |
+| ---------------------------------------------- | ------ | ---------------------------------------- |
+| Sumar un array con un `for`                    | O(n)   | O(1)                                     |
+| `arr.map(fn)`                                  | O(n)   | O(n): crea un array nuevo                |
+| Quitar duplicados con `new Set(arr)`           | O(n)   | O(n)                                     |
+| Invertir un array en el lugar con dos punteros | O(n)   | O(1)                                     |
+| Recursión con profundidad n                    | O(n)   | O(n): cada llamada ocupa el _call stack_ |
+
+<Example title="dos formas de detectar duplicados">
+
+<Compare>
+<Bad>
+
+```ts
+// O(n²) tiempo, O(1) espacio
+const hasDuplicates = (arr: number[]) => arr.some((x, i) => arr.indexOf(x) !== i);
+```
+
+</Bad>
+<Good>
+
+```ts
+// O(n) tiempo, O(n) espacio
+const hasDuplicates = (arr: number[]) => new Set(arr).size !== arr.length;
+```
+
+</Good>
+</Compare>
+
+<Run
+  label="Comparar con 20 000 números"
+  run={(log) => {
+    const arr = Array.from({ length: 20000 }, (_, i) => i);
+    let t = performance.now();
+    arr.some((x, i) => arr.indexOf(x) !== i);
+    log(`indexOf (O(n²)): ${(performance.now() - t).toFixed(1)} ms`);
+    t = performance.now();
+    new Set(arr).size !== arr.length;
+    log(`Set (O(n)):      ${(performance.now() - t).toFixed(1)} ms`);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Time complexity is how the number of operations grows, space complexity is how much extra memory
+  is needed. They often trade off: using a Set or a Map costs O(n) memory but turns repeated O(n)
+  searches into O(1) lookups.
+</SayIt>
+
+## ¿Cómo analizas la complejidad de un fragmento de código?
+
+Recorre el código y aplica estas reglas:
+
+1. **Pasos simples** (asignar, sumar, leer `arr[i]`, `map.get`) → O(1).
+2. **Un loop sobre n elementos** → O(n) multiplicado por lo que hay dentro.
+3. **Loops anidados se multiplican**: un loop dentro de otro, ambos sobre n → O(n²). Sobre dos colecciones distintas → O(n × m).
+4. **Bloques consecutivos se suman** y se queda el mayor: un `sort` y luego un `for` → O(n log n + n) = O(n log n).
+5. **Si en cada paso descartas la mitad** → O(log n).
+6. **Ojo con los loops escondidos**: un método de array **es** un loop. `includes`, `indexOf`, `find`, `filter`, `some` dentro de un `map` o un `for` son un loop anidado. Y `[...acc, x]` dentro de un `reduce` copia el array entero en cada paso: O(n²).
+
+Complejidad de operaciones de JavaScript que conviene conocer:
+
+| Operación                                                                  | Complejidad                     |
+| -------------------------------------------------------------------------- | ------------------------------- |
+| `arr[i]`, `arr.push`, `arr.pop`, `arr.length`                              | O(1)                            |
+| `arr.shift`, `arr.unshift`, `arr.splice` al inicio                         | O(n): mueve todos los elementos |
+| `includes`, `indexOf`, `find`, `filter`, `map`, `slice`, spread `[...arr]` | O(n)                            |
+| `sort`, `toSorted`                                                         | O(n log n)                      |
+| `map.get/set/has/delete`, `set.has/add/delete`, `obj[key]`                 | O(1) promedio                   |
+| `Object.keys(obj)`, `JSON.stringify`                                       | O(n)                            |
+
+<Example title="un reduce que parece lineal y no lo es">
+
+<Compare>
+<Bad>
+
+```ts
+// cada spread copia el objeto entero: O(n²)
+const byId = users.reduce((acc, u) => ({ ...acc, [u.id]: u }), {});
+```
+
+</Bad>
+<Good>
+
+```ts
+// O(n): una sola estructura que se va llenando
+const byId = new Map(users.map((u) => [u.id, u]));
+```
+
+</Good>
+</Compare>
+
+<Run
+  label="Comparar con 3 000 usuarios"
+  run={(log) => {
+    const users = Array.from({ length: 3000 }, (_, i) => ({ id: i, name: `User ${i}` }));
+    let t = performance.now();
+    users.reduce((acc, u) => ({ ...acc, [u.id]: u }), {});
+    log(`reduce con spread: ${(performance.now() - t).toFixed(1)} ms`);
+    t = performance.now();
+    new Map(users.map((u) => [u.id, u]));
+    log(`new Map:           ${(performance.now() - t).toFixed(1)} ms`);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  I look at the loops: nested loops over the same data multiply, so they're O(n squared), and
+  consecutive steps add up, keeping the largest. I watch out for hidden loops, because array methods
+  like includes or find inside another loop, or spreading inside a reduce, are also nested loops.
+</SayIt>
+
+## La optimización clásica: un Map en lugar de find
+
+Es **la** pregunta de complejidad de front end, porque aparece en código real todos los días: tienes dos listas que vienen de la API y hay que **cruzarlas**. Por ejemplo, entradas de horas con `projectId`, y la lista de proyectos.
+
+La solución directa hace un `find` dentro de un `map`: por cada entrada (n), recorre los proyectos (m). Es **O(n × m)**. Con 10 000 entradas y 5 000 proyectos son 50 millones de comparaciones, y la pantalla se congela.
+
+La solución: **construir primero un índice** con un `Map` (una pasada, O(m)) y después cada búsqueda es O(1). Total: **O(n + m)**.
+
+<Example title="cruzar entradas con proyectos">
+
+<Compare>
+<Bad>
+
+```ts
+// O(n × m)
+const rows = entries.map((e) => ({
+  ...e,
+  project: projects.find((p) => p.id === e.projectId),
+}));
+```
+
+</Bad>
+<Good>
+
+```ts
+// O(n + m)
+const projectById = new Map(projects.map((p) => [p.id, p]));
+const rows = entries.map((e) => ({
+  ...e,
+  project: projectById.get(e.projectId),
+}));
+```
+
+</Good>
+</Compare>
+
+<Run
+  label="10 000 entradas × 5 000 proyectos"
+  run={(log) => {
+    const projects = Array.from({ length: 5000 }, (_, i) => ({ id: i, name: `Project ${i}` }));
+    const entries = Array.from({ length: 10000 }, (_, i) => ({ id: i, projectId: (i * 7919) % 5000, hours: 1 }));
+
+    let t = performance.now();
+    entries.map((e) => ({ ...e, project: projects.find((p) => p.id === e.projectId) }));
+    const slow = performance.now() - t;
+
+    t = performance.now();
+    const projectById = new Map(projects.map((p) => [p.id, p]));
+    entries.map((e) => ({ ...e, project: projectById.get(e.projectId) }));
+    const fast = performance.now() - t;
+
+    log(`find dentro de map: ${slow.toFixed(1)} ms`);
+    log(`Map + get:          ${fast.toFixed(1)} ms`);
+    log(`≈ ${Math.round(slow / Math.max(fast, 0.1))} veces más rápido`);
+
+}}
+/>
+
+</Example>
+
+<Tip title="En React">
+  Si ese cruce se hace en el render de un componente, envuélvelo en `useMemo` con `[entries,
+  projects]` como dependencias, para no reconstruir el índice en cada render.
+</Tip>
+
+<SayIt>
+  A find inside a map is O(n times m), because for every item it scans the other list. I build a Map
+  from the second list first, which is one linear pass, and then every lookup is constant time, so
+  the whole thing becomes O(n plus m). It trades a bit of memory for a huge speedup.
+</SayIt>

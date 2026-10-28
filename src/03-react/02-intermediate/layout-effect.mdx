@@ -1,0 +1,141 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { EffectOrder, TooltipDemo } from "./layout-effect.examples";
+
+export const meta = {
+  title: "useLayoutEffect",
+  section: "react-intermediate",
+  order: 100,
+  summary:
+    "En qué momento corre cada tipo de efecto (useEffect, useLayoutEffect, useInsertionEffect), por qué importa para medir el DOM y cuándo usar cada uno.",
+};
+
+## ¿En qué orden pasan las cosas cuando React actualiza la pantalla?
+
+Una actualización tiene dos fases:
+
+1. **Render**: React llama a tus componentes y calcula el JSX nuevo. No toca el DOM.
+2. **Commit**: React aplica los cambios al DOM.
+
+Después del commit, el navegador **pinta** la pantalla (calcula estilos y layout, y dibuja los píxeles). Los tres hooks de efecto se diferencian en **en qué momento** de ese proceso corren:
+
+| Hook                 | Cuándo corre                                       | ¿Bloquea el pintado? | Para qué                                    |
+| -------------------- | -------------------------------------------------- | -------------------- | ------------------------------------------- |
+| `useInsertionEffect` | Durante el commit, **antes** de los layout effects | Sí                   | Insertar `<style>` (librerías CSS-in-JS)    |
+| `useLayoutEffect`    | Después de actualizar el DOM, **antes de pintar**  | Sí                   | Medir el DOM y corregir antes de que se vea |
+| `useEffect`          | **Después de pintar** (normalmente)                | No                   | Casi todo: datos, suscripciones, timers     |
+
+<Example title="el orden real">
+
+```tsx
+function Probe() {
+  useInsertionEffect(() => log("2. useInsertionEffect"));
+  useLayoutEffect(() => log("3. useLayoutEffect"));
+  useEffect(() => log("4. useEffect"));
+  log("1. render");
+  return null;
+}
+```
+
+<Live>
+  <EffectOrder />
+</Live>
+
+</Example>
+
+<SayIt>
+  useEffect runs after the browser paints. useLayoutEffect runs after React updates the DOM but
+  before the paint, and it blocks painting until it finishes. useInsertionEffect runs even earlier
+  and is meant for CSS-in-JS libraries.
+</SayIt>
+
+## ¿Qué hace useLayoutEffect y cuándo usarlo?
+
+`useLayoutEffect` tiene la misma firma que `useEffect` (setup, cleanup, dependencias). La diferencia es que corre **de forma síncrona antes de que el navegador pinte**. Si dentro actualizas el estado, React vuelve a renderizar **también antes de pintar**, así que el usuario solo ve el resultado final.
+
+El caso de uso clásico: **medir el DOM y ajustar la posición** de algo antes de que se vea:
+
+- tooltips y popovers que se colocan arriba o abajo según el espacio disponible,
+- calcular la altura de un elemento para animarlo,
+- mantener la posición del scroll al insertar mensajes arriba en un chat.
+
+Con `useEffect`, el navegador pinta primero la posición incorrecta y luego la corregida: el usuario ve un **parpadeo** o salto.
+
+<Example title="un tooltip que se mide para ponerse encima del botón">
+
+```tsx
+function Tooltip() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [top, setTop] = useState(0);
+
+  useLayoutEffect(() => {
+    const { height } = ref.current!.getBoundingClientRect();
+    setTop(-height - 6); // se aplica antes de pintar
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position: "absolute", top }}>
+      …
+    </div>
+  );
+}
+```
+
+El ejemplo en vivo agrega un bloqueo artificial de 150 ms dentro de la medición para que la diferencia se note en una computadora rápida.
+
+<Live hint="con useEffect: el tooltip aparece abajo y luego salta">
+  <TooltipDemo layout={false} />
+</Live>
+
+<Live hint="con useLayoutEffect: aparece directamente en su lugar">
+  <TooltipDemo layout />
+</Live>
+
+</Example>
+
+<Pitfall title="Bloquea el pintado">
+  Todo lo que hagas en `useLayoutEffect` retrasa lo que el usuario ve. Úsalo solo cuando el salto
+  visual es real, y deja todo lo demás en `useEffect`. Además **no corre en el servidor** (en SSR no
+  hay layout que medir), así que el HTML inicial se verá sin la corrección hasta que hidrate.
+</Pitfall>
+
+<SayIt>
+  I only use useLayoutEffect when I need to measure the DOM and adjust before the user sees it, like
+  positioning a tooltip, because otherwise there's a visible flicker. It blocks painting, so
+  everything else stays in useEffect.
+</SayIt>
+
+## ¿Para qué sirve useInsertionEffect?
+
+`useInsertionEffect` existe para **autores de librerías CSS-in-JS** (styled-components, Emotion). Estas librerías generan reglas CSS en tiempo de ejecución y tienen que insertarlas en un `<style>` **antes** de que cualquier `useLayoutEffect` mida el DOM; si no, la medición se haría con estilos incompletos.
+
+Restricciones: no puede actualizar estado y no tiene acceso a refs (todavía no están asignados). En código de aplicación **no lo vas a usar**; basta con saber qué es y por qué existe.
+
+```tsx
+// Dentro de una librería CSS-in-JS (simplificado)
+function useCSS(rule: string) {
+  useInsertionEffect(() => {
+    if (!inserted.has(rule)) {
+      inserted.add(rule);
+      styleSheet.insertRule(rule);
+    }
+  });
+  return getClassName(rule);
+}
+```
+
+<SayIt>
+  useInsertionEffect is for CSS-in-JS libraries: it lets them inject style tags before any layout
+  effect reads the DOM. Application code basically never needs it.
+</SayIt>
+
+## Cómo elegir
+
+1. ¿Es un efecto normal (datos, suscripción, timer, analytics)? → **`useEffect`**.
+2. ¿Necesitas leer el layout (tamaño, posición, scroll) y cambiar algo **antes** de que se vea? → **`useLayoutEffect`**.
+3. ¿Estás escribiendo una librería que inserta estilos? → **`useInsertionEffect`**.
+
+<Tip title="Empieza con useEffect">
+  La doc de React recomienda empezar siempre con `useEffect` y cambiar a `useLayoutEffect` solo si
+  ves un parpadeo. Antes de eso, pregúntate si puedes evitar medir: muchas posiciones se resuelven
+  con CSS (`position: sticky`, `anchor positioning`, flex o grid).
+</Tip>

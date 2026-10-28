@@ -1,3 +1,6 @@
+// ¿Empezaste este ejercicio? Cambia `false` por `true` y sus tests empezarán a correr.
+export const started = false;
+
 export type Settled<T> =
   { status: "fulfilled"; value: T } | { status: "rejected"; reason: unknown };
 

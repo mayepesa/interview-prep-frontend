@@ -7,6 +7,9 @@ const { hoursByProject, hoursByDay, topProjects, attachProjects } = (
   process.env.SOLUTIONS ? solution : starter
 ) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 const entries: Entry[] = [
   { id: "1", projectId: "p1", project: "Planner", date: "2026-11-03", hours: 3 },
   { id: "2", projectId: "p2", project: "Reports", date: "2026-11-02", hours: 5 },
@@ -15,7 +18,7 @@ const entries: Entry[] = [
   { id: "5", projectId: "p9", project: "Ghost", date: "2026-11-04", hours: 1 },
 ];
 
-describe("03 · data transforms", () => {
+suite("03 · data transforms", () => {
   it("hoursByProject", () => {
     expect(hoursByProject(entries)).toEqual({ Planner: 5, Reports: 5, Billing: 5, Ghost: 1 });
     expect(hoursByProject([])).toEqual({});

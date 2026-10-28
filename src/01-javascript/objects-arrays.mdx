@@ -1,0 +1,725 @@
+import { Example, Run, SayIt, Pitfall, Tip, Compare, Bad, Good } from "../app/study";
+import {
+  entries,
+  shallowCopy,
+  deepCopy,
+  addTag,
+  totalHours,
+  projectNames,
+  longEntries,
+  hasMeetings,
+  allTagged,
+  allTags,
+  hoursByProject,
+  groupByProject,
+  sortedByHours,
+  describeUser,
+  withNullish,
+  withOr,
+} from "./objects-arrays";
+
+export const meta = {
+  title: "Objetos y arrays",
+  section: "javascript",
+  order: 30,
+  summary:
+    "Copias superficiales y profundas, inmutabilidad, igualdad por referencia, los métodos de arrays que usas todos los días, destructuring, spread, optional chaining, `??`, prototipos, clases y Map/Set.",
+};
+
+Todos los ejemplos usan esta lista de horas registradas (está en `objects-arrays.ts`, con tests):
+
+```js
+const entries = [
+  { id: "1", project: "Planner", hours: 3, tags: ["dev"] },
+  { id: "2", project: "Timesheets", hours: 5, tags: ["review"] },
+  { id: "3", project: "Planner", hours: 2, tags: ["dev", "meeting"] },
+  { id: "4", project: "Reports", hours: 4, tags: [] },
+];
+```
+
+## Copia superficial vs copia profunda
+
+Como los objetos se manejan por referencia, "copiar" puede significar dos cosas:
+
+- **Copia superficial** (_shallow_): un objeto nuevo, pero **sus propiedades anidadas siguen siendo las mismas referencias**. Se hace con spread (`{ ...obj }`, `[...arr]`), `Object.assign({}, obj)`, `Array.from`, `slice()`.
+- **Copia profunda** (_deep_): copia **todos los niveles**; no comparte nada con el original. Se hace con `structuredClone(obj)` (nativo en navegadores y Node).
+
+Sobre `structuredClone`:
+
+- Soporta `Date`, `Map`, `Set`, `RegExp`, referencias circulares y más.
+- **No** copia funciones (lanza error), ni elementos del DOM, y las instancias de tus clases pierden su prototipo (quedan como objetos planos).
+- El viejo truco `JSON.parse(JSON.stringify(obj))` pierde `undefined`, funciones y convierte `Date` en string. Evítalo.
+
+En React casi nunca necesitas copia profunda: basta con copiar **solo el camino que cambia** (siguiente sección).
+
+<Example title="spread comparte lo anidado, structuredClone no">
+
+```js
+const entry = { id: "1", project: "Planner", hours: 3, tags: ["dev"] };
+
+const shallow = { ...entry };
+shallow.tags.push("oops"); // ¡también cambia entry.tags!
+shallow === entry; // false: objeto nuevo
+shallow.tags === entry.tags; // true: el array es el mismo
+
+const deep = structuredClone(entry);
+deep.tags === entry.tags; // false: copia de todo
+```
+
+<Run
+  run={(log) => {
+    const entry = { id: "1", project: "Planner", hours: 3, tags: ["dev"] };
+    const shallow = shallowCopy(entry);
+    shallow.tags.push("oops");
+    log("entry.tags después de mutar la copia →", entry.tags);
+    log(
+      "shallow === entry →",
+      shallow === entry,
+      "· shallow.tags === entry.tags →",
+      shallow.tags === entry.tags,
+    );
+    const deep = deepCopy(entry);
+    deep.tags.push("solo en deep");
+    log("deep.tags →", deep.tags, "· entry.tags →", entry.tags);
+    const withDate = structuredClone({ when: new Date(0) });
+    log("structuredClone mantiene Date:", withDate.when instanceof Date);
+    log("JSON la convierte en:", typeof JSON.parse(JSON.stringify({ when: new Date(0) })).when);
+    try {
+      structuredClone({ fn: () => 1 });
+    } catch (e) {
+      log("con funciones:", e.name);
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Spread and Object.assign make shallow copies: the top level is new, but nested objects are shared.
+  For a deep copy I use structuredClone, which handles dates, maps and circular references, but not
+  functions. In React I rarely need deep copies; I copy only the path that changes.
+</SayIt>
+
+## Inmutabilidad: actualizar sin mutar
+
+**Mutar** es cambiar un objeto o array existente (`obj.x = 1`, `arr.push(…)`). **Actualizar de forma inmutable** es crear uno nuevo con el cambio y dejar el original intacto.
+
+¿Por qué importa?
+
+- **React** detecta cambios comparando referencias. Si mutas el estado y llamas a `setState` con el mismo objeto, React no re-renderiza.
+- `React.memo`, `useMemo` y las dependencias de `useEffect` también comparan referencias.
+- El código es más predecible: nadie cambia tus datos "por detrás".
+
+La regla: **copia cada nivel que está en el camino del cambio**, y reutiliza lo demás.
+
+Métodos de arrays que **mutan** y su alternativa que **no muta** (ES2023):
+
+| Muta              | No muta                                |
+| ----------------- | -------------------------------------- |
+| `push`, `unshift` | `[...arr, x]`, `[x, ...arr]`, `concat` |
+| `splice`          | `filter`, `slice`, `toSpliced`         |
+| `sort`            | `toSorted`                             |
+| `reverse`         | `toReversed`                           |
+| `arr[i] = x`      | `arr.with(i, x)`, `map`                |
+
+<Example title="agregar un tag sin mutar">
+
+<Compare>
+<Bad>
+
+```js
+function addTag(entry, tag) {
+  entry.tags.push(tag); // muta el original
+  return entry; // misma referencia
+}
+```
+
+</Bad>
+<Good>
+
+```js
+function addTag(entry, tag) {
+  return { ...entry, tags: [...entry.tags, tag] };
+}
+```
+
+</Good>
+</Compare>
+
+<Run
+  run={(log) => {
+    const entry = { id: "1", project: "Planner", hours: 3, tags: ["dev"] };
+    const next = addTag(entry, "review");
+    log("next.tags →", next.tags, "· entry.tags →", entry.tags);
+    log("next === entry →", next === entry, "· React ve el cambio");
+    const list = [3, 1, 2];
+    log(
+      "with(0, 9) →",
+      list.with(0, 9),
+      "· toSorted →",
+      list.toSorted(),
+      "· toReversed →",
+      list.toReversed(),
+    );
+    log("el original sigue igual →", list);
+    const updated = entries.map((e) => (e.id === "2" ? { ...e, hours: 6 } : e));
+    log("actualizar un elemento con map →", updated[1]);
+    log("los demás son las mismas referencias:", updated[0] === entries[0]);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Updating immutably means creating new objects instead of changing existing ones. React detects
+  changes by reference, so a mutated object looks unchanged. I copy every level on the path to the
+  change, use spread, map and filter, and the non-mutating methods like toSorted.
+</SayIt>
+
+## Igualdad por referencia
+
+`===` compara objetos y arrays **por identidad** (¿es el mismo objeto en memoria?), no por contenido:
+
+- `{ a: 1 } === { a: 1 }` es `false`.
+- `[] === []` es `false`.
+- Una función creada en cada render es una función distinta en cada render.
+
+Para comparar **contenido** necesitas una comparación profunda (una función propia recursiva o una librería como `fast-deep-equal`). Comparar con `JSON.stringify` funciona en casos simples pero depende del orden de las claves.
+
+En React esto explica por qué un objeto o una función creada dentro del componente "cambia" en cada render y dispara efectos o rompe `React.memo`, y para qué sirven `useMemo` y `useCallback`: **mantener la misma referencia** entre renders.
+
+<Example title="mismo contenido, distinta referencia">
+
+```js
+const a = { project: "Planner" };
+const b = { project: "Planner" };
+const c = a;
+
+a === b; // false: dos objetos distintos
+a === c; // true: la misma referencia
+JSON.stringify(a) === JSON.stringify(b); // true (frágil: depende del orden)
+
+const options1 = { page: 1 };
+const options2 = { page: 1 };
+// useEffect(() => {...}, [options]) se ejecutaría cada render si options es un objeto nuevo
+```
+
+<Run
+  run={(log) => {
+    const a = { project: "Planner" };
+    const b = { project: "Planner" };
+    const c = a;
+    log("a === b →", a === b, "· a === c →", a === c);
+    log("JSON iguales →", JSON.stringify(a) === JSON.stringify(b));
+    log("orden distinto →", JSON.stringify({ x: 1, y: 2 }) === JSON.stringify({ y: 2, x: 1 }));
+    const makeHandler = () => () => {};
+    log("dos funciones con el mismo código →", makeHandler() === makeHandler());
+    log("Object.is([], []) →", Object.is([], []));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Objects and arrays are compared by reference, so two objects with the same content aren't equal.
+  That's why an object or function created during render is new every time and can retrigger effects
+  or break memo, and why useMemo and useCallback exist: to keep the same reference.
+</SayIt>
+
+## map, filter, find, some y every
+
+Los métodos que más vas a usar. Todos reciben un callback `(item, index, array)` y **ninguno muta** el array:
+
+| Método                      | Devuelve                                                    | Para qué                                                |
+| --------------------------- | ----------------------------------------------------------- | ------------------------------------------------------- |
+| `map(fn)`                   | array nuevo del **mismo largo**                             | transformar cada elemento (renderizar una lista en JSX) |
+| `filter(fn)`                | array nuevo con los que cumplen                             | quitar elementos                                        |
+| `find(fn)` / `findLast(fn)` | el **primer** (o último) elemento que cumple, o `undefined` | buscar uno                                              |
+| `findIndex(fn)`             | su índice, o `-1`                                           |                                                         |
+| `some(fn)`                  | `true` si **al menos uno** cumple (corta en el primero)     | validar "¿hay alguno?"                                  |
+| `every(fn)`                 | `true` si **todos** cumplen (corta en el primero que no)    | validar "¿todos?"                                       |
+| `includes(x)`               | `true` si contiene el valor (con `===`, y encuentra `NaN`)  | buscar primitivos                                       |
+
+Un detalle de entrevista: `every` en un array vacío devuelve `true` y `some` devuelve `false`.
+
+<Example title="preguntas sobre la lista de horas">
+
+```js
+entries.map((e) => e.project); // nombres (con repetidos)
+[...new Set(entries.map((e) => e.project))]; // nombres únicos
+entries.filter((e) => e.hours >= 4); // entradas largas
+entries.find((e) => e.project === "Reports"); // la primera de Reports
+entries.some((e) => e.tags.includes("meeting")); // ¿hubo reuniones?
+entries.every((e) => e.tags.length > 0); // ¿todas tienen tags?
+```
+
+<Run
+  run={(log) => {
+    log(
+      "map →",
+      entries.map((e) => e.project),
+    );
+    log("únicos →", projectNames(entries));
+    log(
+      "filter (>= 4 h) →",
+      longEntries(entries, 4).map((e) => e.id),
+    );
+    log(
+      "find →",
+      entries.find((e) => e.project === "Reports"),
+    );
+    log("find sin resultado →", String(entries.find((e) => e.project === "X")));
+    log("some (reuniones) →", hasMeetings(entries), "· every (con tags) →", allTagged(entries));
+    log(
+      "[].every →",
+      [].every(() => false),
+      "· [].some →",
+      [].some(() => true),
+    );
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  map transforms every item into a new array of the same length, filter keeps the items that match,
+  find returns the first match or undefined, and some and every answer whether any or all items
+  match, stopping early. None of them mutate the original array.
+</SayIt>
+
+## reduce y Object.groupBy
+
+`reduce(fn, initial)` recorre el array **acumulando** un resultado. El callback recibe `(acumulador, item)` y devuelve el nuevo acumulador. Sirve para cualquier cosa que convierta una lista en **un solo valor**: una suma, un objeto, un `Map`.
+
+- **Pasa siempre el valor inicial.** Sin él, `reduce` usa el primer elemento como acumulador y en un array vacío lanza `TypeError`.
+- Si el resultado es difícil de leer, un `for…of` es igual de válido. `reduce` no es "más pro".
+
+Para **agrupar** existe `Object.groupBy(list, fn)` (ES2024): devuelve un objeto `{ clave: [items] }`. Y `Map.groupBy` hace lo mismo con un `Map` (útil cuando las claves no son strings).
+
+<Example title="sumar y agrupar">
+
+```js
+const total = entries.reduce((sum, e) => sum + e.hours, 0); // 14
+
+const hoursByProject = entries.reduce((acc, e) => {
+  acc[e.project] = (acc[e.project] ?? 0) + e.hours;
+  return acc;
+}, {}); // { Planner: 5, Timesheets: 5, Reports: 4 }
+
+Object.groupBy(entries, (e) => e.project);
+// { Planner: [e1, e3], Timesheets: [e2], Reports: [e4] }
+```
+
+<Run
+  run={(log) => {
+    log("total →", totalHours(entries));
+    log("horas por proyecto →", hoursByProject(entries));
+    const groups = groupByProject(entries);
+    log(
+      "groupBy → claves:",
+      Object.keys(groups),
+      "· Planner tiene",
+      groups.Planner.length,
+      "entradas",
+    );
+    try {
+      [].reduce((a, b) => a + b);
+    } catch (e) {
+      log("reduce sin valor inicial en []:", e.name);
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  reduce folds a list into a single value by passing an accumulator through each item; I always give
+  it an initial value. For grouping I now use Object.groupBy, and if a reduce gets hard to read I
+  just write a for...of loop.
+</SayIt>
+
+## flatMap, sort y toSorted
+
+- **`flat(depth)`** aplana arrays anidados. **`flatMap(fn)`** es `map` + `flat(1)`: útil cuando cada elemento produce **cero, uno o varios** resultados (devolver `[]` lo elimina).
+- **`sort(compare)`** ordena **mutando** el array. **`toSorted(compare)`** (ES2023) devuelve uno nuevo: es lo que quieres con estado de React o props.
+- El comparador devuelve un número: negativo si `a` va antes, positivo si `b` va antes, `0` si son iguales. Para números: `(a, b) => a - b`. Para strings: `a.localeCompare(b)`.
+
+<Example title="aplanar tags y ordenar sin mutar">
+
+```js
+entries.flatMap((e) => e.tags); // ["dev", "review", "dev", "meeting"]
+
+[10, 1, 2].sort(); // [1, 10, 2] ¡orden de strings!
+[10, 1, 2].sort((a, b) => a - b); // [1, 2, 10]
+
+const sorted = entries.toSorted((a, b) => b.hours - a.hours);
+entries[0].id; // sigue siendo "1": no se mutó
+```
+
+<Run
+  run={(log) => {
+    log("flatMap →", allTags(entries));
+    log(
+      "flatMap para filtrar y mapear →",
+      entries.flatMap((e) => (e.hours >= 4 ? [e.project] : [])),
+    );
+    log("sort sin comparador →", [10, 1, 2].sort());
+    log(
+      "sort numérico →",
+      [10, 1, 2].sort((a, b) => a - b),
+    );
+    log(
+      "toSorted por horas →",
+      sortedByHours(entries).map((e) => `${e.id}:${e.hours}h`),
+    );
+    log("entries[0].id sigue siendo →", entries[0].id);
+    log(
+      "strings →",
+      ["Équipe", "beta", "Alpha"].toSorted((a, b) => a.localeCompare(b)),
+    );
+  }}
+/>
+
+</Example>
+
+<Pitfall title="sort sin comparador">
+  `sort()` sin comparador convierte todo a string y ordena alfabéticamente: `[10, 1, 2]` queda
+  `[1, 10, 2]`. Para números pasa siempre `(a, b) => a - b`.
+</Pitfall>
+
+<SayIt>
+  flatMap maps and flattens one level, so it can also drop items by returning an empty array. sort
+  mutates and compares as strings by default, so I always pass a comparator, and with React state I
+  use toSorted, which returns a new array.
+</SayIt>
+
+## Destructuring
+
+**Destructuring** es sacar valores de un objeto o array a variables, en una sola línea:
+
+- **Objetos**: por **nombre** de propiedad. `const { name, team } = user`.
+  - Renombrar: `const { name: userName } = user`.
+  - Valor por defecto (solo si es `undefined`): `const { role = "viewer" } = user`.
+  - Anidado: `const { team: { name: teamName } } = user` (falla si `team` es `undefined`).
+- **Arrays**: por **posición**. `const [first, second] = list`. Así funciona `const [count, setCount] = useState(0)`.
+- En **parámetros** de función: `function Card({ title, onClose })`, que es como se leen las props en React.
+
+<Example title="destructuring con defaults y renombre (describeUser está en objects-arrays.ts)">
+
+```js
+function describeUser(user) {
+  const { name = "Anónimo", team } = user ?? {};
+  return `${name} · ${team?.name ?? "sin equipo"}`;
+}
+
+const [first, , third = "n/a"] = ["a", "b"]; // saltar posiciones y default
+const { project: projectName, hours } = entries[0];
+
+let x = 1,
+  y = 2;
+[x, y] = [y, x]; // intercambiar sin variable temporal
+```
+
+<Run
+  run={(log) => {
+    log(describeUser());
+    log(describeUser({ name: "Maria", team: { name: "Front" } }));
+    const [first, , third = "n/a"] = ["a", "b"];
+    log("first →", first, "· third →", third);
+    const { project: projectName, hours } = entries[0];
+    log("projectName →", projectName, "· hours →", hours);
+    let x = 1,
+      y = 2;
+    [x, y] = [y, x];
+    log("x →", x, "· y →", y);
+    const { role = "viewer" } = { role: null };
+    log("default con null →", String(role), "(los defaults solo aplican a undefined)");
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Destructuring pulls values out of objects by name and out of arrays by position, with renaming and
+  default values. Defaults only apply when the value is undefined, not null. It's how we read props
+  and how useState returns its pair.
+</SayIt>
+
+## Rest y spread
+
+Los mismos tres puntos `...` hacen dos cosas opuestas según dónde estén:
+
+- **Spread** (expandir) — en una **expresión**: abre un array u objeto en sus elementos.
+  - `[...a, ...b]` une arrays; `{ ...defaults, ...options }` mezcla objetos (**gana el último**).
+  - `fn(...args)` pasa un array como argumentos.
+- **Rest** (juntar) — en una **declaración**: junta "lo que sobra".
+  - `function log(first, ...others)`: los argumentos restantes en un array real.
+  - `const { password, ...safeUser } = user`: quitar una propiedad sin mutar.
+  - En React: `function Button({ variant, ...rest }) { return <button {...rest} /> }`.
+
+<Example title="mezclar opciones y quitar una propiedad">
+
+```js
+const defaults = { page: 1, pageSize: 20, sort: "date" };
+const options = { ...defaults, pageSize: 50 }; // gana lo último
+
+const user = { id: 7, name: "Ana", password: "secret" };
+const { password, ...safeUser } = user; // { id, name }
+
+function sum(...numbers) {
+  // rest en parámetros
+  return numbers.reduce((a, b) => a + b, 0);
+}
+sum(...[1, 2, 3]); // spread al llamar
+Math.max(...entries.map((e) => e.hours)); // 5
+```
+
+<Run
+  run={(log) => {
+    const defaults = { page: 1, pageSize: 20, sort: "date" };
+    log("options →", { ...defaults, pageSize: 50 });
+    log("orden inverso →", { pageSize: 50, ...defaults });
+    const user = { id: 7, name: "Ana", password: "secret" };
+    const { password, ...safeUser } = user;
+    log("safeUser →", safeUser, "· password quitada:", password.length, "caracteres");
+    function sum(...numbers) {
+      return numbers.reduce((a, b) => a + b, 0);
+    }
+    log("sum(...[1, 2, 3]) →", sum(...[1, 2, 3]));
+    log("Math.max →", Math.max(...entries.map((e) => e.hours)));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  The three dots mean spread when they expand values, like merging objects or passing an array as
+  arguments, and rest when they collect what's left, like the remaining function arguments or the
+  other props of a component. With object spread, later properties win.
+</SayIt>
+
+## Optional chaining y ?? vs ||
+
+**Optional chaining `?.`** lee una propiedad solo si lo de la izquierda no es `null` ni `undefined`; si lo es, devuelve `undefined` en vez de lanzar `TypeError`:
+
+- `user?.team?.name` — propiedades.
+- `list?.[0]` — índices o claves dinámicas.
+- `onClose?.()` — llamar una función opcional (muy común con props opcionales).
+
+**`??` (nullish coalescing)** devuelve el lado derecho **solo si el izquierdo es `null` o `undefined`**.
+**`||`** devuelve el lado derecho si el izquierdo es **falsy**: `false`, `0`, `""`, `NaN`, `null`, `undefined`.
+
+La diferencia importa con valores válidos que son falsy: `0` horas, una cadena vacía, `false`. Con `||` los pierdes.
+
+| `value`              | `value \|\| 10` | `value ?? 10` |
+| -------------------- | --------------- | ------------- |
+| `0`                  | `10`            | `0`           |
+| `""`                 | `10`            | `""`          |
+| `false`              | `10`            | `false`       |
+| `null` / `undefined` | `10`            | `10`          |
+
+<Example title="valores por defecto que respetan el 0">
+
+```js
+const withNullish = (value) => value ?? 10;
+const withOr = (value) => value || 10;
+
+withNullish(0); // 0  ✓
+withOr(0); // 10 ✗ perdimos un valor válido
+withNullish(null); // 10
+
+const user = {};
+user.team.name; // TypeError
+user.team?.name; // undefined
+user.onSave?.(); // no hace nada si no existe
+```
+
+<Run
+  run={(log) => {
+    log(
+      "withNullish(0) →",
+      withNullish(0),
+      "· withOr(0) →",
+      withOr(0),
+      "· withNullish(null) →",
+      withNullish(null),
+    );
+    log('"" ?? "N/A" →', JSON.stringify("" ?? "N/A"), '· "" || "N/A" →', "" || "N/A");
+    const user = {};
+    try {
+      user.team.name;
+    } catch (e) {
+      log("sin ?. →", e.name);
+    }
+    log("con ?. →", String(user.team?.name));
+    log("llamada opcional →", String(user.onSave?.()));
+    const settings = { volume: 0 };
+    settings.volume ??= 50;
+    settings.theme ??= "dark";
+    log("??= solo asigna si es null/undefined →", settings);
+  }}
+/>
+
+</Example>
+
+<Pitfall title="&& en JSX">
+  `{count && <Badge />}` pinta un `0` en pantalla cuando `count` es `0`, porque `0 && …` devuelve
+  `0` y React lo renderiza. Usa `{count > 0 && <Badge />}`.
+</Pitfall>
+
+<SayIt>
+  Optional chaining stops and returns undefined if something in the chain is null or undefined.
+  Nullish coalescing only falls back on null or undefined, while OR falls back on any falsy value,
+  so I use double question mark for defaults where zero or an empty string are valid.
+</SayIt>
+
+## Prototipos y clases
+
+Cada objeto tiene un enlace interno a otro objeto, su **prototipo** (`Object.getPrototypeOf(obj)`). Cuando lees una propiedad que el objeto no tiene, JavaScript la busca en su prototipo, luego en el prototipo de ese, y así hasta `null`. Esa cadena es la **prototype chain**, y así funciona la herencia en JavaScript: `[1, 2].map` existe porque `map` vive en `Array.prototype`.
+
+**`class`** es sintaxis sobre ese mismo mecanismo (no es un sistema de clases distinto como en Java):
+
+- Los métodos van al `prototype` y los comparten todas las instancias.
+- `constructor` corre con `new`; `extends` encadena prototipos y `super()` llama al constructor padre.
+- `#campo` es un campo **realmente privado** (no se puede leer desde afuera).
+- `static` define métodos en la clase, no en las instancias.
+
+En React moderno casi no se usan clases (salvo los error boundaries) y se prefiere **composición** sobre herencia. Pero conviene saber explicarlas.
+
+<Example title="una clase con campo privado y herencia">
+
+```js
+class Timer {
+  #seconds = 0; // privado de verdad
+  constructor(label) {
+    this.label = label;
+  }
+  tick() {
+    this.#seconds++;
+    return this;
+  }
+  get seconds() {
+    return this.#seconds;
+  }
+}
+
+class PomodoroTimer extends Timer {
+  constructor() {
+    super("pomodoro");
+  }
+  tick() {
+    super.tick(); // cuenta doble
+    return super.tick();
+  }
+}
+```
+
+<Run
+  run={(log) => {
+    class Timer {
+      #seconds = 0;
+      constructor(label) {
+        this.label = label;
+      }
+      tick() {
+        this.#seconds++;
+        return this;
+      }
+      get seconds() {
+        return this.#seconds;
+      }
+    }
+    class PomodoroTimer extends Timer {
+      constructor() {
+        super("pomodoro");
+      }
+      tick() {
+        super.tick();
+        return super.tick();
+      }
+    }
+    const t = new PomodoroTimer().tick();
+    log(t.label, "→", t.seconds, "segundos");
+    log("instanceof Timer →", t instanceof Timer);
+    log(
+      "tick vive en el prototipo:",
+      Object.hasOwn(t, "tick"),
+      "/",
+      Object.hasOwn(Timer.prototype, "tick"),
+    );
+    log("cadena:", Object.getPrototypeOf(Object.getPrototypeOf(t)) === Timer.prototype);
+    log("map viene de Array.prototype:", [].map === Array.prototype.map);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Every object links to a prototype, and property lookups walk up that prototype chain. Classes are
+  syntax over that mechanism: methods live on the prototype and extends links the chains. In React I
+  prefer composition over inheritance, so I mainly see classes in error boundaries or older code.
+</SayIt>
+
+## Map y Set vs objetos y arrays
+
+- **`Set`**: colección de valores **únicos**. `add`, `has`, `delete`, `size`. `has` es O(1), mucho más rápido que `array.includes` (O(n)) en listas grandes. Truco clásico: `[...new Set(arr)]` quita duplicados.
+- **`Map`**: diccionario clave → valor, con ventajas sobre un objeto plano:
+
+|                          | Objeto `{}`                                                              | `Map`                                      |
+| ------------------------ | ------------------------------------------------------------------------ | ------------------------------------------ |
+| Tipos de clave           | strings y symbols (los números se vuelven strings)                       | **cualquier valor**, incluso objetos       |
+| Orden                    | casi siempre el de inserción, con excepciones (claves numéricas primero) | siempre el de inserción                    |
+| Tamaño                   | `Object.keys(o).length`                                                  | `map.size`                                 |
+| Claves heredadas         | puede chocar con `toString`, `__proto__`…                                | ninguna                                    |
+| JSON                     | se serializa directo                                                     | hay que convertirlo (`Object.fromEntries`) |
+| Altas y bajas frecuentes | más lento                                                                | optimizado                                 |
+
+Usa un **objeto** para datos con forma fija (un registro, props, JSON). Usa **`Map`** para diccionarios dinámicos, claves que no son strings o cuando agregas y quitas mucho. `WeakMap` y `WeakSet` guardan claves objeto **sin impedir** que se liberen de memoria (útil para cachés asociadas a objetos).
+
+<Example title="Set para únicos, Map con claves objeto">
+
+```js
+const tags = new Set(entries.flatMap((e) => e.tags));
+tags.has("dev"); // true, O(1)
+tags.size; // 3
+
+const lastEdit = new Map();
+lastEdit.set(entries[0], "ayer"); // la clave es el objeto
+lastEdit.get(entries[0]); // "ayer"
+
+const obj = {};
+obj[entries[0]] = "ayer"; // la clave se vuelve "[object Object]"
+```
+
+<Run
+  run={(log) => {
+    const tags = new Set(entries.flatMap((e) => e.tags));
+    log("Set →", [...tags], "· size:", tags.size, "· has('dev'):", tags.has("dev"));
+    const lastEdit = new Map();
+    lastEdit.set(entries[0], "ayer");
+    log("Map.get(objeto) →", lastEdit.get(entries[0]), "· size:", lastEdit.size);
+    const obj = {};
+    obj[entries[0]] = "ayer";
+    log("claves del objeto →", Object.keys(obj));
+    const numeric = { b: 1, 2: "x", a: 2, 1: "y" };
+    log("orden de claves en un objeto →", Object.keys(numeric));
+    log(
+      "Map a objeto →",
+      Object.fromEntries(
+        new Map([
+          ["a", 1],
+          ["b", 2],
+        ]),
+      ),
+    );
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A Set stores unique values with constant-time lookups, which is great for deduplicating or
+  checking membership. A Map is a dictionary that accepts any key type, keeps insertion order and
+  has a size property. I use plain objects for fixed-shape records and Maps for dynamic
+  dictionaries.
+</SayIt>

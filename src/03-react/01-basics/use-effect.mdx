@@ -1,0 +1,290 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  Clock,
+  EffectLifecycle,
+  MountToggle,
+  ProjectSearch,
+  WindowWidth,
+} from "./use-effect.examples";
+
+export const meta = {
+  title: "useEffect",
+  section: "react-basics",
+  order: 70,
+  summary:
+    "Qué es un efecto, cuándo corre, para qué sirve el cleanup y cómo cancelar una petición. Es de los temas más preguntados porque separa a quien usa React de quien lo entiende.",
+};
+
+## ¿Qué es un efecto colateral (side effect)?
+
+Un componente de React debería ser **puro**: recibe props y estado, y devuelve JSX. Calcular el JSX no debería cambiar nada fuera del componente.
+
+Un **efecto colateral** es todo lo que toca algo _fuera_ de React:
+
+- pedir datos a una API,
+- suscribirse a un evento del navegador (`resize`, `scroll`, `keydown`),
+- iniciar un `setInterval` o un `setTimeout`,
+- conectarse a un WebSocket o a un SDK (analytics, LaunchDarkly),
+- cambiar el `document.title`.
+
+Esas cosas no pueden ir directamente en el cuerpo del componente, porque el cuerpo se ejecuta en **cada render**, y React puede renderizar muchas veces (incluso dos veces seguidas en desarrollo con StrictMode). `useEffect` es el lugar donde van.
+
+<SayIt>
+  A side effect is anything that touches the world outside React: network requests, subscriptions,
+  timers. Rendering must stay pure, so effects go in useEffect, which runs after React updates the
+  screen.
+</SayIt>
+
+## ¿Qué hace useEffect y cuándo se ejecuta?
+
+`useEffect(setup, dependencies)` le dice a React: _"después de pintar este componente en pantalla, ejecuta `setup`"_.
+
+```tsx
+useEffect(() => {
+  // 1. setup: se ejecuta DESPUÉS de que el componente aparece en pantalla
+  return () => {
+    // 2. cleanup (opcional): deshace lo que hizo el setup
+  };
+}, [dependencias]);
+```
+
+El ciclo completo es:
+
+1. React renderiza el componente y actualiza el DOM.
+2. El navegador pinta la pantalla.
+3. React ejecuta el **setup** del efecto.
+4. Si alguna dependencia cambia en un render posterior, React ejecuta primero el **cleanup del efecto anterior** (con los valores viejos) y luego el **setup nuevo** (con los valores nuevos).
+5. Cuando el componente se desmonta, React ejecuta el último cleanup.
+
+El array de dependencias decide **cuándo** se vuelve a ejecutar:
+
+| Dependencias | Cuándo corre el efecto                                                  |
+| ------------ | ----------------------------------------------------------------------- |
+| `[]`         | Una vez, al montar. El cleanup corre al desmontar.                      |
+| `[a, b]`     | Al montar y cada vez que cambie `a` o `b` (comparados con `Object.is`). |
+| sin array    | Después de **cada** render. Casi nunca es lo que quieres.               |
+
+<Example title="el orden de efecto y cleanup">
+
+```tsx
+useEffect(() => {
+  log(`efecto con count = ${count}`);
+  return () => log(`cleanup del efecto con count = ${count}`);
+}, [count]);
+```
+
+<Live hint="haz clic varias veces y lee el orden">
+  <EffectLifecycle />
+</Live>
+
+</Example>
+
+Fíjate que el cleanup imprime el valor **viejo** de `count`: cada render tiene sus propias variables, y el cleanup pertenece al render en el que se creó.
+
+<SayIt>
+  useEffect runs after the browser paints. The dependency array controls when it runs again: with an
+  empty array it runs once on mount, and with values it re-runs when they change. Before re-running,
+  React calls the previous cleanup.
+</SayIt>
+
+## ¿Para qué sirve el cleanup? Suscribirse a un evento
+
+Todo efecto que **empieza** algo que sigue vivo (un listener, un intervalo, una conexión) debe devolver una función que lo **detenga**. Si no, cada vez que el componente se monta queda un listener más vivo para siempre: eso es un _memory leak_, y además el listener intenta actualizar un componente que ya no existe.
+
+<Example title="suscribirse a resize e iniciar un intervalo">
+
+```tsx
+function WindowWidth() {
+  const [width, setWidth] = useState(() => window.innerWidth);
+
+  useEffect(() => {
+    const onResize = () => setWidth(window.innerWidth);
+    window.addEventListener("resize", onResize); // suscribirse al montar
+    return () => window.removeEventListener("resize", onResize); // y desuscribirse al desmontar
+  }, []);
+
+  return <p>Ancho de la ventana: {width}px</p>;
+}
+
+function Clock() {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  return <p>Hora: {now.toLocaleTimeString()}</p>;
+}
+```
+
+<Live hint="cambia el tamaño de la ventana, luego desmonta">
+  <MountToggle>
+    <WindowWidth />
+    <Clock />
+  </MountToggle>
+</Live>
+
+</Example>
+
+<Pitfall>
+  Para `removeEventListener` necesitas **la misma función** que pasaste a `addEventListener`. Por
+  eso `onResize` se guarda en una variable dentro del efecto. Pasar una arrow function nueva en el
+  cleanup no quita nada.
+</Pitfall>
+
+## ¿Cómo ejecutar código al montar y al desmontar?
+
+Con un efecto de dependencias vacías: el setup corre al **montar** y el cleanup al **desmontar**.
+
+```tsx
+useEffect(() => {
+  console.log("montado");
+  return () => console.log("desmontado");
+}, []);
+```
+
+Es el equivalente de `componentDidMount` y `componentWillUnmount` de los componentes de clase.
+
+<Tip title="StrictMode">
+  En desarrollo, con StrictMode, React monta, desmonta y vuelve a montar cada componente una vez
+  para comprobar que tus cleanups funcionan. Si ves el efecto dos veces en la consola, no es un bug:
+  es React buscando efectos sin cleanup. En producción corre una sola vez.
+</Tip>
+
+## ¿Cómo cancelar una petición a una API dentro de useEffect?
+
+Cuando un efecto pide datos y sus dependencias cambian rápido (por ejemplo, alguien escribe en un buscador), puede pasar esto:
+
+1. Escribes `t` → sale la petición A (tarda 800 ms).
+2. Escribes `time` → sale la petición B (tarda 200 ms).
+3. B responde primero y se muestra.
+4. **A responde después y pisa el resultado de B.** Ves resultados de `t` aunque escribiste `time`.
+
+Esto se llama **race condition**. La solución es cancelar la petición anterior en el cleanup con un `AbortController`: `fetch` acepta su `signal`, y al llamar `abort()` la promesa se rechaza con un `AbortError`.
+
+<Example title="buscador con y sin cancelación">
+
+<Compare>
+<Bad>
+
+```tsx
+useEffect(() => {
+  fetch(`/api/projects?q=${query}`)
+    .then((r) => r.json())
+    .then(setResults); // una respuesta vieja puede llegar tarde
+}, [query]);
+```
+
+</Bad>
+<Good>
+
+```tsx
+useEffect(() => {
+  const controller = new AbortController();
+
+  fetch(`/api/projects?q=${query}`, { signal: controller.signal })
+    .then((r) => r.json())
+    .then(setResults)
+    .catch((e) => {
+      if (e.name !== "AbortError") setError(e);
+    });
+
+  return () => controller.abort(); // cancela la anterior
+}, [query]);
+```
+
+</Good>
+</Compare>
+
+<Live hint="sin cancelar: escribe 'time' rápido y espera un segundo">
+  <ProjectSearch abortPrevious={false} />
+</Live>
+
+<Live hint="cancelando: el resultado siempre coincide con lo escrito">
+  <ProjectSearch abortPrevious />
+</Live>
+
+</Example>
+
+En la API falsa de este repo las búsquedas cortas tardan más a propósito, para que veas el problema. En la vida real pasa con redes lentas o con un servidor que responde en tiempos distintos.
+
+<Tip title="En un proyecto real">
+  Para pedir datos uso **React Query** (TanStack Query): cancela, cachea, deduplica y reintenta por
+  mí. Saber hacerlo con `useEffect` demuestra que entiendes qué resuelve esa librería. También es
+  buena idea sumar un **debounce** para no hacer una petición por cada tecla.
+</Tip>
+
+<SayIt>
+  If the dependencies change while a request is in flight, an old response can arrive late and
+  overwrite the new one. I create an AbortController in the effect, pass its signal to fetch, and
+  abort in the cleanup. In production I'd use React Query, which handles cancellation and caching
+  for me.
+</SayIt>
+
+## ¿Cuántos useEffect puede tener un componente?
+
+Todos los que necesites. Es mejor **un efecto por responsabilidad** que uno gigante que hace varias cosas, porque cada uno tiene sus propias dependencias y su propio cleanup.
+
+<Compare>
+<Bad>
+
+```tsx
+useEffect(() => {
+  document.title = `${count} tareas`;
+  const id = setInterval(sync, 5000);
+  return () => clearInterval(id);
+}, [count]); // el intervalo se reinicia cada vez que cambia count
+```
+
+</Bad>
+<Good>
+
+```tsx
+useEffect(() => {
+  document.title = `${count} tareas`;
+}, [count]);
+
+useEffect(() => {
+  const id = setInterval(sync, 5000);
+  return () => clearInterval(id);
+}, []);
+```
+
+</Good>
+</Compare>
+
+## ¿Cuándo NO usar useEffect?
+
+Una de las preguntas que más diferencia a un perfil senior. No necesitas un efecto para:
+
+- **Calcular datos a partir de props o estado.** Calcúlalos durante el render (o con `useMemo` si es caro).
+- **Reaccionar a un evento del usuario.** Ese código va en el event handler (`onClick`, `onSubmit`).
+- **Resetear estado cuando cambia una prop.** Usa una `key` distinta en el componente.
+
+<Compare>
+<Bad>
+
+```tsx
+const [total, setTotal] = useState(0);
+useEffect(() => {
+  setTotal(items.reduce((s, i) => s + i.hours, 0));
+}, [items]); // un render extra y estado duplicado
+```
+
+</Bad>
+<Good>
+
+```tsx
+const total = items.reduce((s, i) => s + i.hours, 0);
+// estado derivado: se calcula en cada render
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  I use useEffect only to synchronize with something outside React. If I can calculate a value from
+  props or state, I do it during render, and if something happens because the user clicked, it goes
+  in the event handler.
+</SayIt>

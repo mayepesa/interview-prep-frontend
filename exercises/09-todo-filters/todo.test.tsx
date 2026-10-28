@@ -6,13 +6,16 @@ import * as starter from "./starter";
 
 const { TodoApp } = (process.env.SOLUTIONS ? solution : starter) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 const initialTodos = [
   { id: "1", text: "Review PR", done: false },
   { id: "2", text: "Write tests", done: true },
   { id: "3", text: "Daily", done: false },
 ];
 
-describe("09 · todo with filters", () => {
+suite("09 · todo with filters", () => {
   it("adds tasks with the button and with Enter, ignoring empty ones", async () => {
     const user = userEvent.setup();
     render(<TodoApp />);

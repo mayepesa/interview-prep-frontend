@@ -1,0 +1,635 @@
+import { Example, Run, SayIt, Pitfall, Tip, Compare, Bad, Good } from "../app/study";
+import {
+  eventLoopOrder,
+  delay,
+  failAfter,
+  sequential,
+  parallel,
+  combinators,
+  withTimeout,
+  retry,
+} from "./event-loop-async";
+import { searchProjects, isAbortError } from "../app/fakeApi";
+
+export const meta = {
+  title: "Event loop y async",
+  section: "javascript",
+  order: 20,
+  summary:
+    "Cómo ejecuta JavaScript el código asíncrono: call stack, event loop, microtareas y macrotareas. Luego promesas, async/await, errores, serie vs paralelo, los combinadores de Promise, timeout, retry y AbortController.",
+};
+
+## ¿Qué es el call stack?
+
+JavaScript es **single-threaded**: tiene un solo hilo que ejecuta tu código, así que hace **una cosa a la vez**.
+
+El **call stack** (pila de llamadas) es donde el motor lleva la cuenta de qué función se está ejecutando:
+
+1. Cuando llamas a una función, se **apila** un "frame" con sus variables.
+2. Si esa función llama a otra, se apila otra encima.
+3. Cuando una función hace `return`, su frame se **desapila** y se sigue con la de abajo.
+
+Dos consecuencias importantes:
+
+- Si una función se llama a sí misma sin fin, la pila se llena: `RangeError: Maximum call stack size exceeded` (el famoso _stack overflow_).
+- Mientras el stack tiene algo, **nada más puede ejecutarse**: ni un click, ni un timer, ni el repintado de la pantalla. Un cálculo síncrono de 2 segundos congela la página 2 segundos.
+
+<Example title="el orden de la pila y un stack overflow">
+
+```js
+function a() {
+  console.log("entra a");
+  b();
+  console.log("sale a");
+}
+function b() {
+  console.log("entra b");
+  c();
+  console.log("sale b");
+}
+function c() {
+  console.log("c (cima de la pila)");
+}
+a();
+
+function forever(n) {
+  return forever(n + 1);
+}
+forever(0); // RangeError: Maximum call stack size exceeded
+```
+
+<Run
+  run={(log) => {
+    function a() {
+      log("entra a");
+      b();
+      log("sale a");
+    }
+    function b() {
+      log("  entra b");
+      c();
+      log("  sale b");
+    }
+    function c() {
+      log("    c (cima de la pila)");
+    }
+    a();
+    let depth = 0;
+    function forever() {
+      depth++;
+      return forever() + 1;
+    }
+    try {
+      forever();
+    } catch (e) {
+      log(`${e.name}: ${e.message} (profundidad ≈ ${Math.round(depth / 1000)} mil llamadas)`);
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  JavaScript runs on a single thread, and the call stack tracks which function is running. Functions
+  are pushed when called and popped when they return. While the stack is busy nothing else can run,
+  so a long synchronous task freezes the UI.
+</SayIt>
+
+## ¿Cómo funciona el event loop?
+
+Si JavaScript hace una cosa a la vez, ¿cómo espera una petición HTTP sin congelarse? Porque **la espera no la hace JavaScript**: la hace el entorno (el navegador o Node).
+
+Las piezas:
+
+- **Call stack**: tu código ejecutándose.
+- **Web APIs**: `setTimeout`, `fetch`, los eventos del DOM… El navegador las maneja en otros hilos. Cuando terminan, ponen un callback en una cola.
+- **Cola de macrotareas** (_task queue_): callbacks de timers, eventos del usuario, mensajes, I/O.
+- **Cola de microtareas**: callbacks de promesas (`then`, `catch`, `finally`), lo que sigue a un `await`, `queueMicrotask` y `MutationObserver`.
+- **Event loop**: el bucle que mueve trabajo de las colas al stack.
+
+Un "giro" del event loop es:
+
+1. Ejecuta **una macrotarea** (al principio, el script completo).
+2. Cuando el stack queda vacío, ejecuta **todas las microtareas**, incluidas las que se agreguen mientras tanto.
+3. Si toca, el navegador **renderiza** (estilos, layout, pintado; aquí corre `requestAnimationFrame`).
+4. Vuelve al paso 1.
+
+Por eso `setTimeout(fn, 0)` no significa "ahora": significa "en una macrotarea futura, cuando el stack esté libre". Y si el stack está ocupado, el timer espera aunque ya haya vencido.
+
+<Example title="setTimeout(0) espera a que el stack se vacíe">
+
+```js
+const start = performance.now();
+setTimeout(() => {
+  console.log(`timeout de 0 ms corrió a los ${performance.now() - start} ms`);
+}, 0);
+
+// bloqueamos el hilo 300 ms con trabajo síncrono
+while (performance.now() - start < 300) {}
+console.log("terminó el trabajo síncrono");
+```
+
+<Run
+  run={async (log) => {
+    const start = performance.now();
+    setTimeout(() => {
+      log(`timeout de 0 ms corrió a los ${Math.round(performance.now() - start)} ms`);
+    }, 0);
+    while (performance.now() - start < 300) {}
+    log("terminó el trabajo síncrono");
+    await delay(50);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  The browser handles timers and network requests outside the JavaScript thread and queues their
+  callbacks. The event loop runs one macrotask, then drains every microtask, then lets the browser
+  render, and repeats. That's why setTimeout zero only runs after the current code and all pending
+  promises.
+</SayIt>
+
+## Microtareas vs macrotareas: ¿en qué orden se imprime?
+
+Es **la** pregunta de "predice la salida". La regla completa:
+
+1. Primero todo el **código síncrono**. Ojo: el cuerpo de un `new Promise((resolve) => …)` y el código de una función `async` **hasta su primer `await`** son síncronos.
+2. Luego **todas las microtareas**, en el orden en que se encolaron.
+3. Luego **una macrotarea** (`setTimeout`), y otra vez todas las microtareas que esta genere.
+
+| Microtareas (van primero)    | Macrotareas (van después)              |
+| ---------------------------- | -------------------------------------- |
+| `promise.then/catch/finally` | `setTimeout`, `setInterval`            |
+| lo que sigue a `await`       | eventos del usuario (`click`, `input`) |
+| `queueMicrotask(fn)`         | `MessageChannel`, I/O                  |
+| `MutationObserver`           |                                        |
+
+<Example title="predice el orden antes de ejecutar (está en event-loop-async.ts, con test)">
+
+```js
+const log = [];
+log.push("1 sync");
+setTimeout(() => log.push("6 timeout"), 0);
+Promise.resolve().then(() => log.push("4 promise"));
+queueMicrotask(() => log.push("5 microtask"));
+(async () => {
+  log.push("2 async start (sync hasta el primer await)");
+  await null;
+  log.push("4b after await");
+})();
+log.push("3 sync end");
+```
+
+<Run
+  label="Ver el orden real"
+  run={async (log) => {
+    const order = await eventLoopOrder();
+    order.forEach((line) => log(line));
+  }}
+/>
+
+</Example>
+
+Los números dicen _por qué_: `2` es síncrono aunque esté en una función `async`; `4`, `5` y `4b` son microtareas en el orden en que se encolaron; `6` es la única macrotarea y va al final.
+
+<Pitfall title="Microtareas que nunca terminan">
+  Como el event loop vacía **toda** la cola de microtareas antes de renderizar, una microtarea que
+  encola otra sin fin congela la página igual que un `while (true)`. Con `setTimeout` recursivo no
+  pasa, porque entre macrotareas el navegador puede pintar.
+</Pitfall>
+
+<SayIt>
+  Synchronous code runs first, including the body of a promise executor and an async function up to
+  its first await. Then the engine drains all microtasks, like promise callbacks and code after
+  await, and only then takes the next macrotask, like a setTimeout.
+</SayIt>
+
+## Ejercicio: predice la salida con promesas encadenadas
+
+Una variante más difícil: microtareas que **encolan otras microtareas**, y un `setTimeout` que genera microtareas. Aplica la regla paso a paso:
+
+- Un `then` encadenado solo se encola cuando el anterior terminó, así que dos cadenas de promesas se **intercalan**.
+- Las microtareas creadas dentro de una macrotarea corren **antes de la siguiente** macrotarea.
+
+<Example title="dos cadenas intercaladas y timers con promesas dentro">
+
+```js
+console.log("A");
+setTimeout(() => {
+  console.log("B");
+  Promise.resolve().then(() => console.log("C"));
+}, 0);
+setTimeout(() => console.log("D"), 0);
+new Promise((resolve) => {
+  console.log("E"); // el executor es síncrono
+  resolve();
+})
+  .then(() => console.log("F"))
+  .then(() => console.log("G"));
+Promise.resolve()
+  .then(() => console.log("H"))
+  .then(() => console.log("I"));
+console.log("J");
+// ¿Orden?
+```
+
+<Run
+  label="Ver la respuesta"
+  run={async (log) => {
+    log("A");
+    setTimeout(() => {
+      log("B");
+      Promise.resolve().then(() => log("C"));
+    }, 0);
+    setTimeout(() => log("D"), 0);
+    new Promise((resolve) => {
+      log("E");
+      resolve();
+    })
+      .then(() => log("F"))
+      .then(() => log("G"));
+    Promise.resolve()
+      .then(() => log("H"))
+      .then(() => log("I"));
+    log("J");
+    await delay(30);
+  }}
+/>
+
+</Example>
+
+La respuesta es `A E J F H G I B C D`: síncronos (`A E J`), microtareas de primer nivel (`F H`), las encadenadas (`G I`), y luego cada timer con sus microtareas (`B C`, después `D`).
+
+<SayIt>
+  I go step by step: first the synchronous logs, then the first level of promise callbacks, then the
+  chained ones they schedule, and finally each timeout, draining its own microtasks before the next
+  timeout runs.
+</SayIt>
+
+## Callbacks, promesas y async/await
+
+Son tres formas de escribir código asíncrono, en orden histórico:
+
+**1. Callbacks.** Pasas una función que se llamará cuando termine. El problema: para hacer pasos en secuencia anidas callbacks (_callback hell_), y cada nivel maneja sus errores a mano.
+
+**2. Promesas.** Una `Promise` es un objeto que representa un valor **futuro**. Tiene tres estados: `pending` (pendiente), `fulfilled` (resuelta con un valor) o `rejected` (rechazada con un error). Una vez que se resuelve o rechaza, queda así para siempre (_settled_). `then` devuelve **otra promesa**, por eso se pueden encadenar en plano, y un solo `catch` al final atrapa cualquier error de la cadena.
+
+**3. async/await.** Azúcar sintáctica sobre promesas:
+
+- Una función `async` **siempre devuelve una promesa**.
+- `await promesa` pausa **esa función** (no el hilo) hasta que la promesa se resuelva, y devuelve su valor. Mientras tanto, el event loop sigue con otras cosas.
+- Si la promesa se rechaza, `await` **lanza** el error, así que se maneja con `try/catch` normal.
+
+<Example title="el mismo flujo de tres formas">
+
+```js
+// 1. callbacks: anidados
+getUser(id, (err, user) => {
+  if (err) return handle(err);
+  getProjects(user, (err, projects) => {
+    if (err) return handle(err);
+    render(projects);
+  });
+});
+
+// 2. promesas: en plano, un solo catch
+getUser(id)
+  .then((user) => getProjects(user))
+  .then(render)
+  .catch(handle);
+
+// 3. async/await: se lee como código síncrono
+async function load(id) {
+  try {
+    const user = await getUser(id);
+    const projects = await getProjects(user);
+    render(projects);
+  } catch (err) {
+    handle(err);
+  }
+}
+```
+
+<Run
+  run={async (log) => {
+    const getUser = (id) => delay(100, { id, name: "Ana" });
+    const getProjects = (user) => delay(100, [`${user.name}: Planner`, `${user.name}: Reports`]);
+    const p = getUser(1);
+    log("una promesa recién creada:", Object.prototype.toString.call(p), "(pending)");
+    async function load(id) {
+      const user = await getUser(id);
+      return getProjects(user);
+    }
+    const result = load(1);
+    log("load() devuelve una promesa:", result instanceof Promise);
+    log("resultado:", await result);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A promise represents a future value and is pending, fulfilled or rejected. Promises fixed callback
+  hell by letting us chain then calls and catch errors once. async/await is syntax on top of
+  promises: an async function always returns a promise, and await pauses only that function, not the
+  thread.
+</SayIt>
+
+## ¿Cómo se manejan los errores en código asíncrono?
+
+- Con **async/await**: `try/catch` alrededor de los `await`. Un `finally` corre siempre (útil para apagar un _loading_).
+- Con **promesas**: `.catch(fn)` al final de la cadena, o `.then(ok, fail)`.
+- Un `try/catch` **no atrapa** errores de una promesa que no esperaste con `await`. El error ocurre después, cuando tu `try` ya terminó.
+- Una promesa rechazada que nadie maneja dispara el evento `unhandledrejection` en el navegador (y en Node termina el proceso). Siempre maneja o propaga.
+- Lanza objetos `Error` (no strings): tienen `message` y `stack`. Con `new Error("…", { cause })` puedes envolver el error original.
+
+<Example title="try/catch atrapa el await, pero no la promesa olvidada">
+
+<Compare>
+<Bad>
+
+```js
+async function save() {
+  try {
+    failAfter(10, "falló"); // sin await
+  } catch (e) {
+    console.log("nunca llega aquí");
+  }
+}
+```
+
+</Bad>
+<Good>
+
+```js
+async function save() {
+  try {
+    await failAfter(10, "falló");
+  } catch (e) {
+    console.log("atrapado:", e.message);
+  } finally {
+    console.log("finally: apagar el loading");
+  }
+}
+```
+
+</Good>
+</Compare>
+
+<Run
+  run={async (log) => {
+    async function withoutAwait() {
+      try {
+        const p = failAfter(10, "falló");
+        p.catch(() => log("  (el error ocurrió después, fuera del try)"));
+        log("sin await: el try terminó sin error");
+      } catch (e) {
+        log("nunca llega aquí");
+      }
+    }
+    async function withAwait() {
+      try {
+        await failAfter(10, "falló");
+      } catch (e) {
+        log("con await: atrapado →", e.message);
+      } finally {
+        log("finally: apagar el loading");
+      }
+    }
+    await withoutAwait();
+    await delay(30);
+    await withAwait();
+    const wrapped = new Error("No se pudo guardar", { cause: new Error("500 del servidor") });
+    log(wrapped.message, "· cause:", wrapped.cause.message);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  With async/await I wrap the awaits in try/catch and use finally for cleanup like turning off a
+  loading state. A try/catch only catches a rejected promise if I await it inside the try. Any
+  rejection must be handled or propagated, otherwise it becomes an unhandled rejection.
+</SayIt>
+
+## En serie vs en paralelo
+
+Cada `await` **espera** antes de seguir. Si las operaciones **no dependen entre sí**, hacerlas una tras otra suma los tiempos sin necesidad:
+
+- **En serie**: `await a(); await b(); await c();` → tarda a + b + c.
+- **En paralelo**: lanzas las tres promesas primero y esperas el conjunto con `Promise.all` → tarda lo que la más lenta.
+
+"Paralelo" aquí significa que las esperas se solapan (las peticiones viajan a la vez); JavaScript sigue usando un solo hilo.
+
+Usa serie solo cuando un paso **necesita el resultado** del anterior (por ejemplo, pedir el usuario y luego sus proyectos), o cuando quieres limitar la carga al servidor.
+
+<Example title="tres esperas de 100 ms (sequential y parallel están en event-loop-async.ts)">
+
+```js
+async function sequential() {
+  const a = await delay(100, "a");
+  const b = await delay(100, "b");
+  const c = await delay(100, "c");
+  return [a, b, c]; // ~300 ms
+}
+
+async function parallel() {
+  return Promise.all([delay(100, "a"), delay(100, "b"), delay(100, "c")]); // ~100 ms
+}
+```
+
+<Run
+  run={async (log) => {
+    const round = (ms) => Math.round(ms / 10) * 10;
+    let t = performance.now();
+    log("sequential →", await sequential(), `≈ ${round(performance.now() - t)} ms`);
+    t = performance.now();
+    log("parallel →", await parallel(), `≈ ${round(performance.now() - t)} ms`);
+  }}
+/>
+
+</Example>
+
+<Pitfall title="await dentro de un forEach">
+  `items.forEach(async (item) => await save(item))` **no espera nada**: `forEach` ignora las promesas que
+  devuelve el callback. Para serie usa `for…of` con `await`; para paralelo, `await Promise.all(items.map(save))`.
+</Pitfall>
+
+<SayIt>
+  Each await waits before moving on, so independent requests shouldn't be awaited one by one. I
+  start them all and await Promise.all, so the total time is the slowest one instead of the sum. I
+  only go sequential when a step needs the previous result.
+</SayIt>
+
+## Promise.all, allSettled, race y any
+
+Los cuatro reciben un array (o iterable) de promesas y devuelven **una** promesa:
+
+| Combinador           | Se resuelve cuando…                                             | Se rechaza cuando…                  | Uso típico                                     |
+| -------------------- | --------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------- |
+| `Promise.all`        | **todas** salen bien → array de valores, en el mismo orden      | **la primera** falla (_fail-fast_)  | datos que necesitas todos para pintar          |
+| `Promise.allSettled` | **todas** terminaron, bien o mal → `{ status, value / reason }` | nunca                               | operaciones independientes: "3 de 5 guardados" |
+| `Promise.race`       | la **primera** que termina sale bien                            | la **primera** que termina falla    | timeouts                                       |
+| `Promise.any`        | la **primera** que sale bien                                    | **todas** fallan → `AggregateError` | servidores espejo, fallback                    |
+
+Ojo: cuando `Promise.all` falla, las otras promesas **siguen corriendo**; solo se ignoran sus resultados. Para cancelarlas de verdad necesitas `AbortController`.
+
+<Example title="los cuatro combinadores">
+
+```js
+await Promise.all([delay(10, 1), delay(20, 2)]); // [1, 2]
+await Promise.allSettled([delay(10, "ok"), failAfter(10, "x")]); // fulfilled, rejected
+await Promise.race([delay(50, "lenta"), delay(10, "rápida")]); // "rápida"
+await Promise.any([failAfter(5, "x"), delay(20, "primera ok")]); // "primera ok"
+
+await Promise.all([delay(10, 1), failAfter(5, "boom")]); // rechaza con "boom"
+await Promise.any([failAfter(5, "a"), failAfter(5, "b")]); // AggregateError
+```
+
+<Run
+  run={async (log) => {
+    log("resumen del módulo →", await combinators());
+    const settled = await Promise.allSettled([delay(10, "ok"), failAfter(10, "falló")]);
+    settled.forEach((r) =>
+      log("allSettled:", r.status, r.status === "fulfilled" ? r.value : r.reason.message),
+    );
+    try {
+      await Promise.all([delay(10, 1), failAfter(5, "boom")]);
+    } catch (e) {
+      log("all rechazó con:", e.message);
+    }
+    try {
+      await Promise.any([failAfter(5, "a"), failAfter(5, "b")]);
+    } catch (e) {
+      log(
+        "any rechazó con:",
+        e.name,
+        e.errors.map((x) => x.message),
+      );
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Promise.all resolves when all succeed and rejects on the first failure. allSettled waits for
+  everything and reports each result, which is great for independent operations. race settles with
+  the first one to finish, which is how you build a timeout, and any resolves with the first
+  success.
+</SayIt>
+
+## ¿Cómo implementas un timeout y un retry?
+
+Dos utilidades que se piden mucho en entrevistas:
+
+**Timeout**: una carrera (`Promise.race`) entre tu promesa y otra que se rechaza a los `ms` milisegundos. La que termine primero gana. Limitación: la operación original **no se cancela**, solo dejas de esperarla. Para cancelar un `fetch` de verdad, usa `AbortSignal.timeout(ms)` (siguiente sección).
+
+**Retry con backoff exponencial**: reintentar una operación que falla, esperando cada vez más (50, 100, 200 ms…) para no saturar a un servidor que ya está con problemas. Se suele agregar _jitter_ (un poco de azar) para que muchos clientes no reintenten al mismo tiempo. Reintenta solo errores **transitorios** (red, 5xx, 429), no un 400 o un 404.
+
+<Example title="withTimeout y retry (en event-loop-async.ts, con tests)">
+
+```ts
+export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return Promise.race([promise, failAfter(ms, `Timeout tras ${ms} ms`)]);
+}
+
+export async function retry<T>(fn: () => Promise<T>, attempts = 3, baseMs = 50): Promise<T> {
+  let lastError: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (i < attempts - 1) await delay(baseMs * 2 ** i, null); // 50, 100, 200…
+    }
+  }
+  throw lastError;
+}
+```
+
+<Run
+  run={async (log) => {
+    try {
+      await withTimeout(delay(300, "datos"), 100);
+    } catch (e) {
+      log("withTimeout →", e.message);
+    }
+    log("withTimeout rápido →", await withTimeout(delay(20, "datos"), 100));
+    const t0 = performance.now();
+    let attempt = 0;
+    const flaky = async () => {
+      attempt++;
+      log(`  intento ${attempt} (${Math.round(performance.now() - t0)} ms)`);
+      if (attempt < 3) throw new Error("503");
+      return "guardado";
+    };
+    log("retry →", await retry(flaky, 4, 50));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  For a timeout I race the promise against one that rejects after the limit, knowing it doesn't
+  cancel the original work. For retries I loop with exponential backoff, ideally with jitter, and
+  only retry transient errors like network failures or 5xx responses.
+</SayIt>
+
+## ¿Qué es AbortController y cómo cancelas una petición?
+
+`AbortController` es la API estándar para **cancelar** operaciones asíncronas:
+
+- `const controller = new AbortController()` crea el controlador.
+- `controller.signal` es la "señal" que le pasas a la operación: `fetch(url, { signal })`.
+- `controller.abort()` cancela: el `fetch` se rechaza con un `DOMException` de nombre `"AbortError"`.
+- `AbortSignal.timeout(ms)` crea una señal que se cancela sola (timeout real, con `"TimeoutError"`), y `AbortSignal.any([a, b])` combina varias.
+- Muchas APIs aceptan `signal`: `fetch`, `addEventListener` (para quitar el listener), y tus propias funciones si escuchas `signal.addEventListener("abort", …)`.
+
+En React se usa en el cleanup de un `useEffect` para que una respuesta vieja no pise a la nueva (ver la página de `useEffect`). Cuando atrapes el error, **ignora el `AbortError`**: no es un fallo real, lo pediste tú.
+
+<Example title="cancelar una búsqueda en curso (con la API falsa del repo)">
+
+```js
+const controller = new AbortController();
+
+const request = searchProjects("time", { signal: controller.signal, delayMs: 500 });
+setTimeout(() => controller.abort(), 100); // el usuario siguió escribiendo
+
+try {
+  await request;
+} catch (error) {
+  if (isAbortError(error)) console.log("cancelada, no es un error real");
+  else throw error;
+}
+```
+
+<Run
+  run={async (log) => {
+    const controller = new AbortController();
+    const request = searchProjects("time", { signal: controller.signal, delayMs: 500 });
+    setTimeout(() => controller.abort(), 100);
+    try {
+      await request;
+      log("no debería llegar aquí");
+    } catch (error) {
+      log(isAbortError(error) ? `cancelada: ${error.name}` : `error real: ${error}`);
+    }
+    try {
+      await searchProjects("time", { signal: AbortSignal.timeout(50), delayMs: 500 });
+    } catch (error) {
+      log("con AbortSignal.timeout(50) →", error.name);
+    }
+    log("sin cancelar →", await searchProjects("time", { delayMs: 50 }));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  AbortController is the standard way to cancel async work. I pass its signal to fetch and call
+  abort when the result is no longer needed, for example in a useEffect cleanup. The promise rejects
+  with an AbortError, which I ignore because it's expected. AbortSignal.timeout gives a real timeout
+  that actually cancels the request.
+</SayIt>

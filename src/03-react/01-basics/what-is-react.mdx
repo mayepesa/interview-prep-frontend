@@ -1,0 +1,392 @@
+import { Example, Live, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  DeclarativeCounter,
+  ImperativeCounter,
+  ReconciliationDemo,
+  ShadowDomDemo,
+} from "./what-is-react.examples";
+
+export const meta = {
+  title: "¿Qué es React?",
+  section: "react-basics",
+  order: 10,
+  summary:
+    "Qué es React, qué significa que sea declarativo, cómo funcionan el Virtual DOM y la reconciliación, y cómo arrancar un proyecto. Es la base de casi todas las preguntas de React.",
+};
+
+## ¿Qué es React?
+
+**React** es una librería de JavaScript para construir interfaces de usuario a partir de **componentes**. La creó Meta (Facebook) en 2013 y hoy es la más usada para aplicaciones web.
+
+Sus ideas centrales son tres:
+
+1. **Componentes.** La UI se divide en piezas pequeñas y reutilizables (`Button`, `TaskList`, `Timesheet`). Cada componente es una función que recibe datos (**props**) y devuelve lo que se debe ver.
+2. **Declarativo.** Describes _cómo debe verse_ la UI para un estado dado. Cuando el estado cambia, React calcula qué cambió y actualiza el DOM por ti.
+3. **Flujo de datos unidireccional.** Los datos bajan de padres a hijos por props. Si un hijo necesita cambiar algo, el padre le pasa una función. Esto hace que sea fácil seguir de dónde viene cada valor.
+
+Una forma muy usada de resumirlo: **UI = f(estado)**. La interfaz es el resultado de una función aplicada al estado actual.
+
+React no es solo para la web: el mismo modelo de componentes se usa en móvil con **React Native**. El paquete `react` define componentes y hooks; otro paquete (el _renderer_, como `react-dom`) decide dónde se dibujan.
+
+<SayIt>
+  React is a JavaScript library for building user interfaces out of components. It's declarative: I
+  describe what the UI should look like for the current state, and React figures out the minimal DOM
+  updates. Data flows one way, from parents to children through props.
+</SayIt>
+
+## ¿Qué significa que React sea declarativo?
+
+Hay dos formas de programar una interfaz:
+
+|                   | Imperativo                                     | Declarativo                                           |
+| ----------------- | ---------------------------------------------- | ----------------------------------------------------- |
+| Qué escribes      | **Cómo** cambiar la pantalla, paso a paso      | **Qué** debe verse para cada estado                   |
+| Ejemplo           | `label.textContent = …`, `el.classList.add(…)` | `<p>Clics: {count}</p>`                               |
+| Quién toca el DOM | Tú                                             | React                                                 |
+| Riesgo típico     | Olvidar un paso y dejar la UI desincronizada   | Pocos: la UI siempre se recalcula a partir del estado |
+
+En el código **imperativo** tú guardas el estado en variables sueltas y, cada vez que algo cambia, tienes que recordar **todas** las partes del DOM que dependen de ese valor. Con 3 elementos es fácil; con 300 es donde aparecen los bugs (un contador que no se actualiza, un botón que sigue deshabilitado).
+
+En el código **declarativo** escribes una función que, dado el estado, devuelve la UI completa. No te preocupas por la transición entre "antes" y "después": React compara las dos descripciones y aplica solo los cambios necesarios.
+
+Una analogía: imperativo es darle al taxista cada giro ("a la derecha, dos cuadras, a la izquierda…"); declarativo es darle la dirección.
+
+<Example title="el mismo contador, imperativo vs declarativo">
+
+<Compare>
+<Bad>
+
+```ts
+// Vanilla DOM: tú creas, escuchas y actualizas cada nodo
+let count = 0;
+const label = document.createElement("p");
+const button = document.createElement("button");
+label.textContent = "Clics: 0";
+button.textContent = "+1";
+
+button.addEventListener("click", () => {
+  count += 1;
+  label.textContent = `Clics: ${count}`;
+  label.style.color = count >= 5 ? "red" : "";
+});
+
+root.append(label, button);
+```
+
+</Bad>
+<Good>
+
+```tsx
+// React: describes la UI para cualquier valor de count
+function Counter() {
+  const [count, setCount] = useState(0);
+
+  return (
+    <div>
+      <p style={{ color: count >= 5 ? "red" : undefined }}>Clics: {count}</p>
+      <button onClick={() => setCount((c) => c + 1)}>+1</button>
+    </div>
+  );
+}
+```
+
+</Good>
+</Compare>
+
+<Live hint="imperativo: haz clic 5 veces">
+  <ImperativeCounter />
+</Live>
+
+<Live hint="declarativo: el mismo resultado">
+  <DeclarativeCounter />
+</Live>
+
+</Example>
+
+Se ven iguales, pero en la versión imperativa el color y el texto son dos instrucciones que **tienes que acordarte** de ejecutar juntas. En la declarativa, ambas salen de `count`: es imposible que queden desincronizadas.
+
+<Tip title="Declarativo no significa sin código imperativo">
+  Dentro de React sigues escribiendo código imperativo en los event handlers y en los efectos
+  (`fetch`, `focus()`, `scrollIntoView()`). Lo declarativo es **la forma de describir la UI**.
+</Tip>
+
+<SayIt>
+  Imperative code tells the browser how to change the DOM step by step. Declarative code describes
+  what the UI should look like for a given state. With React I write the UI as a function of state,
+  so the screen can't drift out of sync with the data.
+</SayIt>
+
+## ¿React es una librería o un framework?
+
+Oficialmente React es una **librería**: resuelve una sola cosa, la capa de UI (componentes, estado, renderizado). No trae de serie:
+
+- **routing** (React Router, TanStack Router),
+- **pedir y cachear datos** (TanStack Query, SWR),
+- **formularios** (React Hook Form),
+- **estado global** (Redux Toolkit, Zustand),
+- **build y servidor** (Vite, Next.js).
+
+La diferencia clásica es la **inversión de control**: tú llamas a una librería cuando la necesitas; un framework te llama a ti y define la estructura del proyecto. Angular es un framework: trae router, formularios, HTTP e inyección de dependencias.
+
+En la práctica, React se usa casi siempre **dentro de un framework**: Next.js o React Router (en modo framework) añaden routing, renderizado en el servidor y carga de datos. Por eso la documentación oficial de React recomienda empezar con uno de ellos para apps completas.
+
+<SayIt>
+  React itself is a library: it only handles the view layer. Routing, data fetching and builds come
+  from other tools, which gives flexibility but means more decisions. For a full app, React is
+  usually used inside a framework like Next.js, or with Vite plus a router.
+</SayIt>
+
+## ¿Qué es el Virtual DOM?
+
+El **DOM** (Document Object Model) es el árbol de nodos que el navegador construye a partir del HTML. Modificarlo no es lento en sí, pero cada cambio puede provocar trabajo caro: recalcular estilos, **layout** (posiciones y tamaños) y **paint** (volver a pintar píxeles).
+
+El **Virtual DOM** es una representación del árbol de UI hecha con **objetos de JavaScript simples**. Cuando escribes `<p className="total">8 h</p>`, React no crea un nodo del DOM: crea un objeto parecido a este:
+
+```ts
+{ type: "p", props: { className: "total", children: "8 h" }, key: null }
+```
+
+Ese objeto se llama **elemento de React**. Crear objetos es muy barato, así que React puede generar la descripción completa de la UI en cada render y, después, **comparar** la nueva con la anterior para tocar en el DOM real solo lo que cambió.
+
+Puntos importantes para la entrevista:
+
+- El Virtual DOM **no es magia de velocidad**: código vanilla bien escrito siempre puede ser igual o más rápido. Lo que da React es un modelo **declarativo** con un rendimiento _suficientemente bueno_ por defecto.
+- Internamente, React guarda el árbol en estructuras llamadas **fibers** (una por componente o elemento). La arquitectura **Fiber** permite partir el trabajo de render en pedazos, pausarlo y priorizar (la base de `useTransition` y Suspense).
+- El nombre "Virtual DOM" ya casi no aparece en la documentación oficial; React habla de **render** y **commit**.
+
+### Render y commit
+
+1. **Trigger**: algo pide un render (montaje inicial o un `setState`).
+2. **Render**: React llama a tus componentes y obtiene los nuevos elementos. No toca el DOM. Por eso el render debe ser **puro**.
+3. **Commit**: React aplica al DOM los cambios mínimos y luego ejecuta los efectos.
+
+<SayIt>
+  The virtual DOM is a lightweight JavaScript description of the UI. On every render React builds a
+  new tree, compares it with the previous one and commits only the differences to the real DOM. The
+  win is not raw speed, it's being able to write declarative code with good default performance.
+</SayIt>
+
+## ¿Qué es la reconciliación y cómo funciona el diffing?
+
+**Reconciliación** es el proceso de comparar el árbol de elementos nuevo con el anterior para decidir qué cambiar en el DOM. Comparar dos árboles cualesquiera de forma óptima es un problema O(n³); React usa un algoritmo **heurístico O(n)** basado en dos supuestos:
+
+1. **Si el tipo del elemento cambia, todo el subárbol se reemplaza.** Pasar de `<div>` a `<section>`, o de `<Counter>` a `<Profile>`, desmonta lo viejo (con su estado) y monta lo nuevo.
+2. **Si el tipo es el mismo, se conserva el nodo** y solo se actualizan los atributos que cambiaron. Si es un componente, conserva su estado y se re-renderiza con las nuevas props.
+3. **En listas, la `key` identifica a cada hijo.** Sin keys, React compara por posición. Con keys, sabe que el elemento `"b"` se movió en vez de pensar que todos cambiaron.
+
+Una regla derivada que se pregunta mucho: **el estado vive en la posición del árbol**, no en la variable ni en el componente. Si el mismo componente aparece en el mismo lugar con el mismo tipo y la misma key, conserva su estado.
+
+Cambiar la `key` a propósito es la forma oficial de decir "esto es otra cosa, empieza de cero" (por ejemplo, `<Profile key={userId} />`).
+
+<Example title="las tres reglas del diffing">
+
+```tsx
+// 1. Mismo tipo, cambia una prop → se conserva el input y lo que escribiste
+<div style={style}>
+  <TypingBox />
+</div>;
+
+// 2. Cambia el tipo del contenedor → React desmonta todo el subárbol
+{
+  asSection ? (
+    <section>
+      <TypingBox />
+    </section>
+  ) : (
+    <div>
+      <TypingBox />
+    </div>
+  );
+}
+
+// 3. Cambia la key → React lo trata como un componente nuevo
+<TypingBox key={version} />;
+```
+
+<Live hint="escribe algo y prueba cada botón">
+  <ReconciliationDemo />
+</Live>
+
+</Example>
+
+<Pitfall title="Componentes definidos dentro de otros">
+  Si declaras `function Row() {}` **dentro** de otro componente, en cada render se crea una función
+  nueva: para React es un **tipo distinto**, así que desmonta y vuelve a montar `Row`, perdiendo su
+  estado y el foco de los inputs. Declara los componentes siempre en el nivel superior del módulo.
+</Pitfall>
+
+<SayIt>
+  Reconciliation is how React diffs the new element tree against the previous one. If the element
+  type changes, it throws away the whole subtree; if the type is the same, it keeps the node and
+  updates props. Keys tell it which list item is which, and changing a key is a deliberate way to
+  reset a component's state.
+</SayIt>
+
+## ¿Cuál es la diferencia entre Shadow DOM y Virtual DOM?
+
+Suenan parecido pero resuelven problemas totalmente distintos:
+
+|                | Virtual DOM                                             | Shadow DOM                                                |
+| -------------- | ------------------------------------------------------- | --------------------------------------------------------- |
+| Qué es         | Un concepto/técnica de librerías como React             | Una **API nativa del navegador** (Web Components)         |
+| Dónde vive     | En memoria, como objetos de JavaScript                  | En el DOM real, como un subárbol oculto                   |
+| Para qué sirve | Calcular cambios y actualizar el DOM de forma eficiente | **Encapsular** estilos y estructura de un componente      |
+| Ejemplo        | Lo que hace React en cada render                        | El `<video>` nativo con sus controles, o un `<my-widget>` |
+
+El **Shadow DOM** crea un árbol aislado (_shadow root_) dentro de un elemento: el CSS de adentro no se escapa y el CSS de la página no entra. Se usa en Web Components, design systems que se integran en cualquier página y widgets de terceros.
+
+Se pueden combinar: React puede renderizar dentro de un shadow root, y un Web Component puede usarse dentro de JSX.
+
+<Example title="encapsulación real con Shadow DOM">
+
+```ts
+const shadow = host.attachShadow({ mode: "open" });
+shadow.innerHTML = `
+  <style>p { color: red; }</style>
+  <p>Dentro del Shadow DOM</p>
+`;
+// El <p> de afuera NO se pinta rojo: el estilo está encapsulado.
+```
+
+<Live hint="solo el primer párrafo es rojo">
+  <ShadowDomDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  The virtual DOM is React's in-memory representation used to compute efficient updates. The Shadow
+  DOM is a native browser API for encapsulation: styles and markup inside a shadow root don't leak
+  in or out. They solve different problems and can be used together.
+</SayIt>
+
+## ¿Qué es React DOM y qué hace createRoot?
+
+React está dividido en paquetes:
+
+- **`react`**: lo que no depende de la plataforma: componentes, JSX, hooks (`useState`, `useEffect`…), contexto.
+- **`react-dom`**: el _renderer_ para el navegador. Sabe crear y actualizar nodos del DOM, manejar eventos y formularios. También expone `createPortal` y `flushSync`.
+- **`react-dom/client`**: `createRoot` y `hydrateRoot`, para arrancar la app en el navegador.
+- **`react-dom/server`**: funciones para renderizar a HTML en el servidor (las usan frameworks como Next.js).
+
+Esta separación es lo que permite que el mismo `react` funcione con otros renderers: **React Native** (vistas nativas de iOS/Android), React Three Fiber (escenas 3D) o renderers de PDF.
+
+**`createRoot(container)`** crea una _raíz_ de React dentro de un nodo del DOM existente; `root.render(<App />)` monta tu app ahí. A partir de ese momento React es dueño de ese nodo: no lo modifiques a mano. `hydrateRoot` se usa en lugar de `createRoot` cuando el HTML ya viene renderizado desde el servidor.
+
+<Example title="el punto de entrada de una app con Vite">
+
+```tsx
+// src/main.tsx
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import App from "./App";
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <App />
+  </StrictMode>,
+);
+```
+
+</Example>
+
+<Tip title="ReactDOM.render ya no existe">
+  `ReactDOM.render` se reemplazó por `createRoot` en React 18 y se eliminó en React 19. Si lo ves en
+  una entrevista o en código viejo, ya sabes por qué: `createRoot` habilita el renderizado
+  concurrente y el batching automático.
+</Tip>
+
+<SayIt>
+  The react package holds the platform-independent parts like components and hooks, and react-dom is
+  the renderer for the browser. I start an app with createRoot from react-dom/client and call render
+  with the root component; with server-rendered HTML I use hydrateRoot instead.
+</SayIt>
+
+## ¿Cómo inicializar un proyecto de React?
+
+Hoy hay dos caminos principales (Create React App está **deprecado** desde 2025; no lo uses en proyectos nuevos):
+
+| Opción                   | Cuándo                                                                            | Qué te da                                                         |
+| ------------------------ | --------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| **Vite**                 | SPA (single page app): dashboards, apps internas, apps embebidas como las de Jira | Dev server muy rápido, build con Rollup, plantilla con TypeScript |
+| **Next.js**              | Sitios con SEO, renderizado en el servidor, apps full-stack                       | Routing por archivos, Server Components, SSR/SSG, API routes      |
+| React Router (framework) | SPA o SSR con un router muy completo                                              | Loaders/actions para datos, SSR opcional                          |
+
+<Example title="crear un proyecto">
+
+```bash
+# SPA con Vite + React + TypeScript
+npm create vite@latest my-app -- --template react-ts
+cd my-app
+npm install
+npm run dev
+
+# App con Next.js (pregunta por TypeScript, ESLint, Tailwind…)
+npx create-next-app@latest my-app
+```
+
+</Example>
+
+<SayIt>
+  For a single-page app I use Vite with the React TypeScript template, because it's fast and simple.
+  If I need server rendering, SEO or a full-stack setup, I use Next.js. Create React App is
+  deprecated, so I wouldn't start a new project with it.
+</SayIt>
+
+## ¿Qué JavaScript necesito saber para React?
+
+React es "solo JavaScript": casi todo lo que escribes en un componente es JS moderno. Lo mínimo indispensable:
+
+- **Funciones flecha** y funciones como valores (callbacks, `onClick={() => …}`).
+- **Destructuring** de objetos y arrays: `const { title } = props`, `const [count, setCount] = useState(0)`.
+- **Spread y rest**: `{ ...task, done: true }`, `[...items, nuevo]`, `function Button({ variant, ...rest })`.
+- **Métodos de array inmutables**: `map` (listas), `filter`, `reduce`, `toSorted`, `find`.
+- **Template literals**: `` `Hola ${name}` ``.
+- **Operadores**: ternario, `&&`, `??` y optional chaining `?.`.
+- **Módulos ES**: `import` / `export` (nombrados y default).
+- **Promesas y async/await** para pedir datos.
+- **Closures**: cada render "captura" sus props y su estado.
+- **Referencias vs valores**: por qué `{}` !== `{}` y por qué no se muta el estado.
+
+<Example title="el JavaScript que usas en todo componente">
+
+```ts
+const task = { id: "t1", title: "Revisar PR", hours: 2, tags: ["code-review"] };
+
+const { title, hours = 0 } = task; // destructuring con default
+const updated = { ...task, hours: hours + 1 }; // copia inmutable
+const tasks = [task, { id: "t2", title: "Daily", hours: 1, tags: [] }];
+
+const titles = tasks.map((t) => t.title); // lo que haces para listas
+const total = tasks.reduce((sum, t) => sum + t.hours, 0);
+const firstTag = tasks[1]?.tags[0] ?? "sin tag"; // optional chaining + ??
+```
+
+<Run
+  run={(log) => {
+    const task = { id: "t1", title: "Revisar PR", hours: 2, tags: ["code-review"] };
+    const { title, hours = 0 } = task;
+    const updated = { ...task, hours: hours + 1 };
+    const tasks = [task, { id: "t2", title: "Daily", hours: 1, tags: [] }];
+    log("title:", title);
+    log("updated:", updated);
+    log("¿es el mismo objeto?", updated === task);
+    log(
+      "titles:",
+      tasks.map((t) => t.title),
+    );
+    log(
+      "total:",
+      tasks.reduce((sum, t) => sum + t.hours, 0),
+    );
+    log("firstTag:", tasks[1]?.tags[0] ?? "sin tag");
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  React is mostly plain modern JavaScript, so I rely on destructuring, spread, array methods like
+  map and filter, arrow functions, modules and async/await. Understanding closures and references
+  versus values is key, because it explains stale state and why we never mutate state.
+</SayIt>

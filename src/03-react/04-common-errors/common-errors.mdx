@@ -1,0 +1,381 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { KeyBugDemo } from "./common-errors.examples";
+
+export const meta = {
+  title: "Errores típicos",
+  section: "react-errors",
+  order: 10,
+  summary:
+    "Los mensajes de error y warnings más comunes de React: qué significan, por qué pasan y cómo se arreglan de verdad (sin silenciarlos).",
+};
+
+## Cómo leer un error de React
+
+Antes de los errores concretos, tres cosas que ayudan con todos:
+
+1. **En desarrollo** React muestra mensajes completos y un **component stack** (la lista de componentes desde la raíz hasta el que falló). Lee el stack de abajo hacia arriba: el primer componente **tuyo** suele ser el culpable.
+2. **En producción** los mensajes vienen **minificados**: `Minified React error #418; visit https://react.dev/errors/418`. Ese enlace muestra el mensaje completo. Reproduce el error en desarrollo para tener el contexto.
+3. **Warning vs error**: un _warning_ (amarillo) no rompe la app, pero casi siempre señala un bug real. Un _error_ (rojo) detiene el render de ese árbol hasta el Error Boundary más cercano.
+
+Y una regla de actitud: **arregla la causa, no el síntoma**. Desactivar el linter, poner `// @ts-ignore` o quitar StrictMode esconde el problema y lo manda a producción.
+
+<SayIt>
+  When I hit a React error I reproduce it in development, where the message is complete and includes
+  the component stack, and I read the stack to find the first component of mine. In production the
+  errors are minified, but the error code links to the full message.
+</SayIt>
+
+## Each child in a list should have a unique "key" prop
+
+**Qué significa**: renderizaste una lista con `.map()` y los elementos no tienen `key`, o hay `key` repetidas.
+
+**Por qué importa**: al actualizar una lista, React usa la `key` para saber **qué elemento es cuál** entre un render y el siguiente. Sin keys estables, React empareja por **posición**. Si insertas un elemento al principio, React cree que cada fila "cambió de contenido" en lugar de que se agregó una: el **estado interno** (el texto de un input, si un acordeón está abierto, el foco) se queda en la posición equivocada.
+
+Usar el **índice** como key elimina el warning pero **no** el bug, si la lista se reordena, se filtra o se le insertan elementos.
+
+<Example title="escribe una nota en 'Revisar PR' y agrega una tarea al principio">
+
+<Compare>
+<Bad>
+
+```tsx
+{
+  tasks.map((task, index) => (
+    <li key={index}>
+      {task.title} <input />
+    </li>
+  ));
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+{
+  tasks.map((task) => (
+    <li key={task.id}>
+      {task.title} <input />
+    </li>
+  ));
+}
+```
+
+</Good>
+</Compare>
+
+<Live hint="key = index: la nota se queda en la primera fila, no en su tarea">
+  <KeyBugDemo useIdAsKey={false} />
+</Live>
+
+<Live hint="key = id: la nota viaja con su tarea">
+  <KeyBugDemo useIdAsKey />
+</Live>
+
+</Example>
+
+Detalles:
+
+- La `key` va en el elemento **que devuelve el `map`** (el `<li>` o `<Row>`), no dentro del componente `Row`.
+- Debe ser **estable y única entre hermanos**: un `id` de la base de datos. No `Math.random()` (cambia en cada render y desmonta todo).
+- Con un **Fragment** en un map, usa `<Fragment key={id}>`; el atajo `<>` no acepta key.
+- El índice está bien solo si la lista es estática (nunca se reordena, filtra ni inserta).
+
+<SayIt>
+  React uses keys to match list items between renders. Without stable keys it matches by position,
+  so local state like input text ends up on the wrong row when items are inserted or reordered. I
+  use a stable id from the data, not the index or a random value.
+</SayIt>
+
+## React Hook "useX" is called conditionally
+
+**Qué significa**: es un error del linter `eslint-plugin-react-hooks`. Un hook está dentro de un `if`, un loop, un callback o **después de un `return` temprano**. En tiempo de ejecución la variante es _"Rendered more (o fewer) hooks than during the previous render"_.
+
+**Por qué pasa**: React identifica cada hook por su **orden de llamada**. Si un render llama 3 hooks y el siguiente 2, todos los valores se desplazan (ver la página de custom hooks, donde se simula).
+
+**Cómo se arregla**: todos los hooks arriba, sin condiciones. La condición va **dentro** del hook o en el JSX.
+
+<Compare>
+<Bad>
+
+```tsx
+function Timesheet({ user }) {
+  if (!user) return null;
+  const [week, setWeek] = useState(1);
+
+  if (user.isAdmin) {
+    useEffect(() => trackAdmin(), []);
+  }
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function Timesheet({ user }) {
+  const [week, setWeek] = useState(1);
+
+  useEffect(() => {
+    if (user?.isAdmin) trackAdmin();
+  }, [user]);
+
+  if (!user) return null; // returns después de los hooks
+}
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  This means a hook is called inside a condition, a loop or after an early return. React relies on
+  hooks being called in the same order every render, so I move all hooks to the top and put the
+  condition inside the hook or in the JSX.
+</SayIt>
+
+## Can't perform a React state update on an unmounted component
+
+**Qué significa**: algo asíncrono (un `fetch`, un `setTimeout`, una suscripción) terminó **después** de que el componente se desmontó, y llamó a `setState`.
+
+**Ojo**: React 18 **eliminó** este warning, porque en la mayoría de los casos no era un memory leak real y llevaba a "arreglos" malos (como un flag `isMounted`). Pero el **problema de fondo sigue existiendo** y te lo pueden preguntar:
+
+- un intervalo o una suscripción sin cleanup **sí** es un leak: sigue corriendo para siempre,
+- una petición que vuelve tarde puede pisar datos más nuevos (**race condition**).
+
+**Cómo se arregla**: con cleanup en el efecto. Cancela la petición con `AbortController`, limpia timers y desuscribe listeners.
+
+<Compare>
+<Bad>
+
+```tsx
+useEffect(() => {
+  fetch(url)
+    .then((r) => r.json())
+    .then(setData); // puede llegar tras desmontar o tras cambiar url
+}, [url]);
+```
+
+</Bad>
+<Good>
+
+```tsx
+useEffect(() => {
+  const controller = new AbortController();
+  fetch(url, { signal: controller.signal })
+    .then((r) => r.json())
+    .then(setData)
+    .catch((e) => {
+      if (e.name !== "AbortError") setError(e);
+    });
+  return () => controller.abort();
+}, [url]);
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  It means async work finished after the component unmounted and tried to set state. React 18
+  removed the warning, but the underlying issues are real: leaked subscriptions and race conditions.
+  I fix it with effect cleanups, aborting requests with AbortController and clearing timers and
+  listeners.
+</SayIt>
+
+## Too many re-renders. React limits the number of renders to prevent an infinite loop
+
+**Qué significa**: un componente llama a `setState` **durante su propio render**, y lo hace de forma incondicional: cada render provoca otro render. React lo corta tras unas decenas de intentos.
+
+**Por qué pasa**, casi siempre por una de estas dos:
+
+1. **Llamar al handler en vez de pasarlo**: `onClick={setCount(count + 1)}` _ejecuta_ `setCount` mientras renderiza. Hay que pasar una función: `onClick={() => setCount(count + 1)}`.
+2. **Sincronizar estado en el cuerpo del componente**: `setTotal(sum(items))` directamente en el render. Ese valor es estado derivado: se calcula, no se guarda.
+
+<Compare>
+<Bad>
+
+```tsx
+<button onClick={setCount(count + 1)}>+1</button>;
+
+function Total({ items }) {
+  const [total, setTotal] = useState(0);
+  setTotal(sum(items)); // en cada render
+  return <p>{total}</p>;
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+<button onClick={() => setCount(count + 1)}>+1</button>;
+
+function Total({ items }) {
+  const total = sum(items); // estado derivado
+  return <p>{total}</p>;
+}
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  This error means a component sets state during its own render, so every render schedules another
+  one. The usual causes are calling the setter in onClick instead of passing a function, or storing
+  derived values in state instead of computing them.
+</SayIt>
+
+## Maximum update depth exceeded
+
+**Qué significa**: hay un bucle de actualizaciones, pero en **efectos** (o en `componentDidUpdate`), no en el render. Un efecto actualiza un estado, el cambio vuelve a disparar el efecto, que vuelve a actualizar…
+
+**Por qué pasa**:
+
+1. Un efecto **actualiza su propia dependencia**: `useEffect(() => setFilters({ ...filters, page: 1 }), [filters])`. Cada `setFilters` crea un objeto nuevo, distinto por referencia.
+2. Una dependencia que es un **objeto o función creados en cada render** (`options = { ... }` en el cuerpo) y el efecto hace `setState`.
+3. Un ref callback o un `onChange` de un hijo que llama al padre en cada render.
+
+**Cómo se arregla**: casi siempre ese estado no debería actualizarse en un efecto. Hazlo en el **event handler** que provoca el cambio, calcúlalo como estado derivado, o estabiliza la dependencia (`useMemo`, primitivos en lugar de objetos).
+
+<Compare>
+<Bad>
+
+```tsx
+const [filters, setFilters] = useState({ query: "", page: 3 });
+
+useEffect(() => {
+  setFilters({ ...filters, page: 1 }); // objeto nuevo → efecto otra vez
+}, [filters]);
+```
+
+</Bad>
+<Good>
+
+```tsx
+const [filters, setFilters] = useState({ query: "", page: 3 });
+
+// volver a la página 1 es consecuencia de escribir: va en el handler
+const onSearch = (query: string) => setFilters({ query, page: 1 });
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  Maximum update depth exceeded is an infinite loop of updates, usually an effect that sets state
+  that is also one of its own dependencies, often an object recreated on every render. I move that
+  update to the event handler, derive the value, or make the dependency stable.
+</SayIt>
+
+## Objects are not valid as a React child
+
+**Qué significa**: pusiste un **objeto** donde React esperaba algo que sabe mostrar. React puede renderizar strings, números, elementos JSX, arrays de esos, `null`, `undefined` y booleanos (estos tres no muestran nada). Un objeto plano, un `Date` o una promesa, no.
+
+**Por qué pasa**:
+
+- `{user}` en lugar de `{user.name}`,
+- `{new Date()}` en lugar de `{date.toLocaleDateString()}`,
+- la respuesta de una API que no tiene la forma que creías (`{data}` cuando `data` es `{ items: [...] }`),
+- un componente `async` en un proyecto **sin** Server Components (devuelve una promesa).
+
+<Compare>
+<Bad>
+
+```tsx
+<p>Usuario: {user}</p>
+<p>Creado: {project.createdAt}</p> {/* es un Date */}
+```
+
+</Bad>
+<Good>
+
+```tsx
+<p>Usuario: {user.name}</p>
+<p>Creado: {project.createdAt.toLocaleDateString("es")}</p>
+{/* para depurar: <pre>{JSON.stringify(user, null, 2)}</pre> */}
+```
+
+</Good>
+</Compare>
+
+<Tip title="TypeScript lo previene">
+  Con `children: ReactNode` tipado, TypeScript marca la mayoría de estos casos antes de ejecutar. Es
+  un buen ejemplo de por qué tipar las props vale la pena.
+</Tip>
+
+<SayIt>
+  It means I'm rendering a plain object, like a whole user or a Date, where React expects a string,
+  number or element. I render the specific field or format the value, and use JSON.stringify only
+  for debugging.
+</SayIt>
+
+## Hydration failed / text content does not match
+
+**Qué significa**: en una app con SSR, el HTML que generó el servidor **no coincide** con el primer render del cliente. React 19 muestra un diff con la diferencia, descarta el HTML del servidor y renderiza ese árbol de nuevo en el cliente.
+
+**Por qué pasa**: valores distintos en servidor y cliente durante el render: `Date.now()`, `Math.random()`, `window` / `localStorage`, la zona horaria o el idioma, HTML inválido (un `<div>` dentro de un `<p>`), o una extensión del navegador que modificó el DOM.
+
+**Cómo se arregla**: los valores solo-cliente van en un `useEffect`; los IDs con `useId`; HTML válido; `suppressHydrationWarning` solo para texto que inevitablemente difiere. Lo explicamos con un ejemplo en vivo en la página "Arquitectura de renderizado".
+
+<Compare>
+<Bad>
+
+```tsx
+function Greeting() {
+  const hour = new Date().getHours(); // hora del servidor ≠ hora del usuario
+  return <p>{hour < 12 ? "Buenos días" : "Buenas tardes"}</p>;
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function Greeting() {
+  const [hour, setHour] = useState<number | null>(null);
+  useEffect(() => setHour(new Date().getHours()), []);
+  if (hour === null) return <p>Hola</p>; // igual en servidor y cliente
+  return <p>{hour < 12 ? "Buenos días" : "Buenas tardes"}</p>;
+}
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  A hydration error means the server HTML and the first client render differ, usually because of
+  dates, random values or browser-only APIs read during render. I make the first render
+  deterministic and move client-only values into an effect.
+</SayIt>
+
+## Otros dos que vas a ver
+
+### A component is changing an uncontrolled input to be controlled
+
+El `value` de un input empezó en `undefined` (no controlado) y luego pasó a ser un string (controlado). Típico con datos que llegan después: `value={user?.name}`. Inicializa con `""` (`value={user?.name ?? ""}`). Ver la página de componentes controlados.
+
+### Cannot update a component while rendering a different component
+
+Un componente, **durante su render**, llama al `setState` de **otro** componente (normalmente el padre, a través de una prop como `onChange`). Mueve esa llamada a un event handler o a un `useEffect`, o mejor, sube el estado para que el padre lo calcule.
+
+<Compare>
+<Bad>
+
+```tsx
+function Child({ items, onCount }) {
+  onCount(items.length); // setState del padre en el render
+  return <List items={items} />;
+}
+```
+
+</Bad>
+<Good>
+
+```tsx
+function Parent({ items }) {
+  const count = items.length; // el padre lo calcula
+  return <Child items={items} />;
+}
+```
+
+</Good>
+</Compare>

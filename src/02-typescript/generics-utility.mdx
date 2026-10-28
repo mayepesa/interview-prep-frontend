@@ -1,0 +1,503 @@
+import { Example, Run, SayIt, Pitfall, Tip, Compare, Bad, Good } from "../app/study";
+import { first, byId, pluck, applyPatch, STATUSES, STATUS_LABEL, isStatus } from "./types";
+
+export const meta = {
+  title: "Generics y utility types",
+  section: "typescript",
+  order: 20,
+  summary:
+    "Generics con restricciones, keyof y valores por defecto; los utility types que se usan a diario; y cómo derivar tipos de otros: as const, satisfies, typeof, indexed access, mapped, conditional con infer y template literal types.",
+};
+
+## ¿Qué son los generics?
+
+Un **generic** es un **parámetro de tipo**: igual que una función recibe valores como parámetros, un tipo o una función genérica recibe **tipos**. Se escribe entre `<>`, normalmente con nombres como `T`, `K`, `V` (o nombres descriptivos como `TItem`).
+
+El problema que resuelven: quieres **una** función que sirva para muchos tipos **sin perder la relación** entre la entrada y la salida.
+
+- Con un tipo concreto (`number[]`) solo sirve para números.
+- Con `any[]` sirve para todo, pero lo que devuelve es `any`: perdiste la información.
+- Con un generic `T[]`, si le pasas `Entry[]` devuelve `Entry`; si le pasas `number[]`, devuelve `number`.
+
+Casi siempre **no hace falta escribir el tipo al llamar**: TypeScript lo infiere de los argumentos. Ya usas generics todo el tiempo: `Array<T>`, `Promise<T>`, `useState<T>`, `Map<K, V>`.
+
+<Example title="first: la misma función para cualquier array (en types.ts, con tests)">
+
+<Compare>
+<Bad>
+
+```ts
+function first(list: any[]): any {
+  return list[0];
+}
+const e = first(entries); // any: sin autocompletado ni errores
+```
+
+</Bad>
+<Good>
+
+```ts
+function first<T>(list: readonly T[]): T | undefined {
+  return list[0];
+}
+const e = first(entries); // Entry | undefined
+const n = first([1, 2]); // number | undefined
+const s = first<string>([]); // explícito, cuando no se puede inferir
+```
+
+</Good>
+</Compare>
+
+<Run
+  run={(log) => {
+    log("first([3, 5]) →", first([3, 5]));
+    log("first(['a']) →", first(["a"]));
+    log("first([]) →", String(first([])));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Generics are type parameters. They let one function or type work with many types while keeping the
+  relationship between input and output, so first of an Entry array returns an Entry, not any.
+  TypeScript usually infers them from the arguments.
+</SayIt>
+
+## Restricciones con extends y keyof
+
+Un generic sin restricciones (`T`) puede ser **cualquier cosa**, así que dentro de la función no puedes usar casi nada de él. Con **`extends`** le pones un **mínimo** obligatorio:
+
+- `T extends { id: string }`: `T` puede ser cualquier tipo, siempre que tenga un `id` string. Dentro puedes usar `item.id`, y el resultado sigue siendo `T` (el tipo completo, no solo `{ id }`).
+
+**`keyof T`** es la unión de las claves de un tipo: `keyof Entry` es `"id" | "project" | "hours"`. Combinado con generics:
+
+- `K extends keyof T`: `K` debe ser una clave **real** de `T`.
+- `T[K]`: el tipo del valor en esa clave (_indexed access_).
+
+Así escribes funciones como `pluck(list, "hours")` donde TypeScript **rechaza** claves inexistentes y sabe que el resultado es `number[]`.
+
+<Example title="byId y pluck (en types.ts, con tests)">
+
+```ts
+function byId<T extends { id: string }>(list: readonly T[]): Record<string, T> {
+  return Object.fromEntries(list.map((item) => [item.id, item])); // item.id existe
+}
+
+function pluck<T, K extends keyof T>(list: readonly T[], key: K): T[K][] {
+  return list.map((item) => item[key]);
+}
+
+pluck(entries, "hours"); // number[]
+pluck(entries, "project"); // string[]
+pluck(entries, "minutes");
+//             ~~~~~~~~~ Error: Argument of type '"minutes"' is not assignable
+//                       to parameter of type 'keyof Entry'.
+byId([{ name: "x" }]);
+//      ~~~~ Error: Object literal may only specify known properties,
+//           and 'name' does not exist in type '{ id: string; }'.
+```
+
+<Run
+  run={(log) => {
+    const entries = [
+      { id: "a", project: "Planner", hours: 2 },
+      { id: "b", project: "Reports", hours: 5 },
+    ];
+    log("pluck(entries, 'hours') →", pluck(entries, "hours"));
+    log("pluck(entries, 'project') →", pluck(entries, "project"));
+    log("byId(entries).b →", byId(entries).b);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  extends constrains a generic to a minimum shape, so inside the function I can use those properties
+  and still return the full type. keyof gives the union of a type's keys, and combining K extends
+  keyof T with T[K] lets me write functions like pluck that reject unknown keys and return the right
+  type.
+</SayIt>
+
+## Generics en tipos y parámetros por defecto
+
+Los generics también se usan en **tipos**, no solo en funciones. Es la forma de describir "envoltorios" reutilizables: una respuesta paginada, el estado de una petición, una tabla.
+
+- **Valor por defecto**: `type ApiResponse<T = unknown>` permite escribir `ApiResponse` sin argumento.
+- Se pueden combinar restricción y default: `<T extends object = {}>`.
+- Varios parámetros: `Map<K, V>`, `Record<K, V>`.
+- Los parámetros con default van **al final**, igual que en funciones.
+
+En React, componentes como una tabla o un select genérico (ver la página de tipar React) se basan en esto.
+
+<Example title="un tipo de respuesta paginada">
+
+```ts
+type Paginated<T, TCursor = number> = {
+  items: T[];
+  nextCursor: TCursor | null;
+  total: number;
+};
+
+type ProjectsPage = Paginated<Project>; // nextCursor: number | null
+type EventsPage = Paginated<Event, string>; // nextCursor: string | null
+
+async function fetchPage<T>(url: string): Promise<Paginated<T>> {
+  const res = await fetch(url);
+  return res.json();
+}
+const page = await fetchPage<Project>("/api/projects"); // page.items: Project[]
+```
+
+</Example>
+
+<Pitfall title="Un generic que solo aparece en el retorno">
+  `fetchPage<Project>(…)` no valida nada: el JSON puede ser cualquier cosa y el generic solo "promete" el tipo,
+  igual que un `as`. Para datos externos, valida en runtime (type guard o Zod) en ese punto.
+</Pitfall>
+
+<SayIt>
+  Types can be generic too, like a Paginated of T, and type parameters can have defaults and
+  constraints. One thing I watch for: a generic used only in the return type, like a fetch helper,
+  is just an unchecked assertion, so I validate the data at that boundary.
+</SayIt>
+
+## Utility types para objetos: Partial, Required, Pick, Omit, Record, Readonly
+
+TypeScript trae **utility types**: tipos genéricos que **transforman** otro tipo. Sirven para no repetir definiciones: si cambias `Entry`, todo lo derivado se actualiza solo.
+
+| Utility               | Resultado                           | Uso típico                                        |
+| --------------------- | ----------------------------------- | ------------------------------------------------- |
+| `Partial<T>`          | todas las propiedades opcionales    | un _patch_ / formulario de edición                |
+| `Required<T>`         | todas obligatorias                  | config después de aplicar defaults                |
+| `Pick<T, "a" \| "b">` | solo esas claves                    | props de una tarjeta de resumen                   |
+| `Omit<T, "id">`       | todas menos esas                    | lo que envías al crear (el servidor pone el `id`) |
+| `Record<K, V>`        | objeto con claves `K` y valores `V` | diccionarios, mapas de etiquetas                  |
+| `Readonly<T>`         | todas `readonly` (superficial)      | props, estado                                     |
+
+Se combinan: `Partial<Omit<Entry, "id">>` es "cualquier subconjunto de los campos editables".
+
+<Example title="derivar en vez de repetir (en types.ts, con tests)">
+
+```ts
+type Entry = { id: string; project: string; hours: number };
+
+type EntryDraft = Omit<Entry, "id">; // { project: string; hours: number }
+type EntryPatch = Partial<EntryDraft>; // { project?: string; hours?: number }
+type EntryPreview = Pick<Entry, "project" | "hours">;
+type HoursByDay = Record<"mon" | "tue" | "wed" | "thu" | "fri", number>;
+type ReadonlyEntry = Readonly<Entry>;
+
+function applyPatch(entry: Entry, patch: EntryPatch): Entry {
+  return { ...entry, ...patch };
+}
+
+const week: HoursByDay = { mon: 8, tue: 6, wed: 8, thu: 7 };
+//    ~~~~ Error: Property 'fri' is missing in type … but required in type 'HoursByDay'.
+```
+
+<Run
+  run={(log) => {
+    const entry = { id: "a", project: "Planner", hours: 2 };
+    log("applyPatch(entry, { hours: 3 }) →", applyPatch(entry, { hours: 3 }));
+    log("el original no cambia →", entry);
+  }}
+/>
+
+</Example>
+
+<Tip title="Omit no revisa las claves">
+  `Omit<Entry, "idd">` compila sin error (devuelve `Entry` completo) porque `Omit` acepta cualquier string.
+  `Pick` sí exige claves existentes.
+</Tip>
+
+<SayIt>
+  Utility types transform existing types so I don't duplicate definitions: Partial for patches, Omit
+  for create payloads without the id, Pick for a subset, Record for dictionaries and Readonly for
+  data I shouldn't mutate. If the base type changes, everything derived updates automatically.
+</SayIt>
+
+## Utility types para funciones y promesas: ReturnType, Parameters, Awaited, NonNullable
+
+| Utility                 | Resultado                                               |
+| ----------------------- | ------------------------------------------------------- |
+| `ReturnType<typeof fn>` | el tipo que devuelve una función                        |
+| `Parameters<typeof fn>` | una tupla con los tipos de sus parámetros               |
+| `Awaited<T>`            | el valor de una promesa (desenvuelve promesas anidadas) |
+| `NonNullable<T>`        | quita `null` y `undefined`                              |
+
+Son muy útiles con código que **no controlas** (una librería que no exporta sus tipos) o para no repetir el tipo de algo que ya está definido por una función. Fíjate en el `typeof`: estos utilities reciben un **tipo**, así que para usar una función (un valor) primero obtienes su tipo con `typeof fn`.
+
+<Example title="sacar tipos de funciones existentes">
+
+```ts
+async function loadUser(id: string, opts?: { signal?: AbortSignal }) {
+  return { id, name: "Ana", teamId: null as string | null };
+}
+
+type LoadUserResult = ReturnType<typeof loadUser>; // Promise<{ id: string; name: string; teamId: string | null }>
+type User = Awaited<ReturnType<typeof loadUser>>; // { id: string; name: string; teamId: string | null }
+type LoadUserArgs = Parameters<typeof loadUser>; // [id: string, opts?: { signal?: AbortSignal }]
+type TeamId = NonNullable<User["teamId"]>; // string
+
+// típico con librerías: el tipo de las props de un componente que no las exporta
+type ChartProps = React.ComponentProps<typeof Chart>;
+```
+
+</Example>
+
+<SayIt>
+  ReturnType and Parameters extract types from a function, Awaited unwraps a promise and NonNullable
+  removes null and undefined. They're handy with libraries that don't export their types, or to
+  derive a type from a function instead of duplicating it.
+</SayIt>
+
+## typeof e indexed access types
+
+Dos herramientas para **derivar** tipos:
+
+- **`typeof valor`** (en una posición de tipo) obtiene el tipo de una **variable o función** que ya existe. No confundir con el `typeof` de JavaScript, que en runtime devuelve un string como `"object"`.
+- **Indexed access `T["clave"]`** obtiene el tipo de una propiedad. Variantes:
+  - `T["a" | "b"]` → unión de los tipos de esas propiedades.
+  - `T[keyof T]` → unión de los tipos de **todos** los valores.
+  - `Arr[number]` → el tipo de los **elementos** de un array o tupla.
+
+Juntos permiten tener **una sola fuente de verdad**: defines un valor (una config, una lista) y sacas los tipos de ahí.
+
+<Example title="tipos sacados de valores">
+
+```ts
+const defaultFilters = { status: "active", page: 1, tags: [] as string[] };
+type Filters = typeof defaultFilters; // { status: string; page: number; tags: string[] }
+
+type Entry = { id: string; project: string; hours: number; tags: string[] };
+type Hours = Entry["hours"]; // number
+type Tag = Entry["tags"][number]; // string
+type EntryValue = Entry[keyof Entry]; // string | number | string[]
+
+const projects = [{ id: "p1", name: "Planner" }];
+type ProjectItem = (typeof projects)[number]; // { id: string; name: string }
+```
+
+</Example>
+
+<SayIt>
+  In a type position, typeof gives me the type of an existing value, and indexed access types like T
+  of key, or T of number for array elements, pull out part of a type. Together they let a single
+  value be the source of truth for its types.
+</SayIt>
+
+## as const
+
+`as const` le dice a TypeScript que infiera el tipo **más estrecho posible**:
+
+- Los strings y números quedan como **literales** (`"draft"`, no `string`).
+- Los arrays se vuelven **tuplas `readonly`**.
+- Todas las propiedades se vuelven **`readonly`**, en todos los niveles.
+
+El patrón estrella: declarar una lista de valores **una vez** y derivar de ella el tipo unión con `(typeof LIST)[number]`. Así la lista existe en runtime (para pintar un `<select>`, validar, iterar) y el tipo nunca se desincroniza. Es la alternativa moderna a los `enum`.
+
+En hooks personalizados también se usa para devolver una **tupla** (`return [value, toggle] as const`), ver la página de tipar React.
+
+<Example title="la lista y el tipo desde una sola fuente (en types.ts, con tests)">
+
+```ts
+const STATUSES = ["draft", "submitted", "approved"];
+// string[]: perdimos los valores
+
+const STATUSES = ["draft", "submitted", "approved"] as const;
+// readonly ["draft", "submitted", "approved"]
+
+type Status = (typeof STATUSES)[number]; // "draft" | "submitted" | "approved"
+
+function isStatus(value: string): value is Status {
+  return (STATUSES as readonly string[]).includes(value);
+}
+
+const ROUTES = { home: "/", settings: "/settings" } as const;
+type Route = (typeof ROUTES)[keyof typeof ROUTES]; // "/" | "/settings"
+```
+
+<Run
+  run={(log) => {
+    log("STATUSES en runtime →", STATUSES, "(as const no cambia el valor, solo el tipo)");
+    log(
+      "isStatus('approved') →",
+      isStatus("approved"),
+      "· isStatus('deleted') →",
+      isStatus("deleted"),
+    );
+    log("congelado en runtime:", Object.isFrozen(STATUSES), "(readonly es solo de compilación)");
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  as const makes TypeScript infer the narrowest type: literals instead of string, and readonly
+  tuples. I use it to declare a list of values once and derive the union type from it with typeof
+  list of number, which keeps runtime values and types in sync and replaces enums.
+</SayIt>
+
+## satisfies
+
+`satisfies` (TypeScript 4.9) **valida** que un valor cumple un tipo **sin cambiar el tipo inferido**. Compáralo con una anotación:
+
+- **Anotación `const x: T = …`**: el tipo de `x` pasa a ser **`T`**. Pierdes la información más precisa (qué claves exactas tiene, qué literales).
+- **`const x = … satisfies T`**: TypeScript revisa que encaje en `T` (te avisa de claves que faltan, sobran o están mal escritas) pero `x` conserva **su tipo inferido**.
+
+Ideal para objetos de configuración: mapas de etiquetas, rutas, temas, columnas de una tabla. Se combina bien con `as const`: `{ … } as const satisfies Record<Status, string>`.
+
+<Example title="anotación vs satisfies (STATUS_LABEL está en types.ts)">
+
+```ts
+type Status = "draft" | "submitted" | "approved";
+
+const colors: Record<string, string> = { draft: "gray", approved: "green" };
+colors.aproved; // string: no hay error con el typo, cualquier clave vale
+
+const STATUS_LABEL = {
+  draft: "Borrador",
+  submitted: "Enviado",
+  approved: "Aprobado",
+} satisfies Record<Status, string>; // si falta un status o hay un typo → error
+
+STATUS_LABEL.draft; // string
+STATUS_LABEL.aproved; // Error: Property 'aproved' does not exist. Did you mean 'approved'?
+
+const theme = {
+  spacing: [0, 4, 8, 16],
+  primary: "#3558d8",
+} satisfies Record<string, string | number[]>;
+theme.spacing.map((n) => n * 2); // ok: sigue siendo number[], no string | number[]
+```
+
+<Run
+  run={(log) => {
+    log("STATUS_LABEL →", STATUS_LABEL);
+    for (const s of STATUSES) log(`${s} → ${STATUS_LABEL[s]}`);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  satisfies checks that a value matches a type without widening the value's own inferred type. An
+  annotation replaces the type, so I'd lose the exact keys or literals. I use satisfies for config
+  objects like label maps, often together with as const.
+</SayIt>
+
+## Mapped types
+
+Un **mapped type** crea un tipo nuevo **recorriendo las claves** de otro: `{ [K in keyof T]: … }`. Es como un `map` pero para tipos. Así están hechos por dentro `Partial`, `Readonly`, `Record` y `Pick`.
+
+Lo que puedes hacer:
+
+- Cambiar el tipo de cada valor: `{ [K in keyof T]: T[K] | null }`.
+- Agregar o quitar modificadores: `?`, `readonly`, y quitarlos con `-?` / `-readonly`.
+- **Renombrar claves** con `as` (TS 4.1): ``{ [K in keyof T as `get${Capitalize<K & string>}`]: () => T[K] }``.
+- **Filtrar claves**: si el `as` produce `never`, la clave desaparece.
+
+<Example title="Partial casero, Nullable y getters (Getters está en types.ts)">
+
+```ts
+type MyPartial<T> = { [K in keyof T]?: T[K] };
+type Nullable<T> = { [K in keyof T]: T[K] | null };
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
+type Getters<T> = {
+  [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K];
+};
+type EntryGetters = Getters<{ hours: number; project: string }>;
+// { getHours: () => number; getProject: () => string }
+
+// filtrar: solo las claves cuyo valor es string
+type StringKeys<T> = { [K in keyof T as T[K] extends string ? K : never]: T[K] };
+type EntryStrings = StringKeys<Entry>; // { id: string; project: string }
+```
+
+</Example>
+
+<SayIt>
+  A mapped type iterates over the keys of another type to build a new one, which is how Partial,
+  Readonly and Record are implemented. I can change value types, add or remove optional and readonly
+  modifiers, and rename or filter keys with an as clause.
+</SayIt>
+
+## Conditional types e infer
+
+Un **conditional type** es un "if" a nivel de tipos: `T extends U ? X : Y`. Si `T` es asignable a `U`, el resultado es `X`; si no, `Y`.
+
+- Con una **unión**, se aplica **a cada miembro por separado** (_distributive conditional types_). Así funciona `NonNullable<T>`: `T extends null | undefined ? never : T`, y los `never` desaparecen de la unión.
+- **`infer`** declara una variable de tipo **dentro** del `extends` para "capturar" una parte: "si `T` es una promesa de _algo_, dame ese _algo_". Así están hechos `ReturnType`, `Parameters` y `Awaited`.
+
+En el día a día los **usas** más de lo que los **escribes**: aparecen en librerías y en utilidades del proyecto. En una entrevista basta con saber leerlos y escribir uno simple.
+
+<Example title="NonNullable, ReturnType y Awaited caseros (Awaited2 está en types.ts)">
+
+```ts
+type MyNonNullable<T> = T extends null | undefined ? never : T;
+type A = MyNonNullable<string | null | undefined>; // string
+
+type MyReturnType<F> = F extends (...args: any[]) => infer R ? R : never;
+type B = MyReturnType<() => number[]>; // number[]
+
+type Awaited2<T> = T extends Promise<infer U> ? U : T;
+type C = Awaited2<Promise<string>>; // string
+type D = Awaited2<number>; // number
+
+type ElementOf<T> = T extends readonly (infer E)[] ? E : never;
+type E = ElementOf<Entry[]>; // Entry
+
+type IsString<T> = T extends string ? "yes" : "no";
+type F = IsString<"a" | 1>; // "yes" | "no" (distributivo)
+```
+
+</Example>
+
+<SayIt>
+  A conditional type is an if-else on types: T extends U, then X, else Y, and it distributes over
+  unions. infer captures part of the matched type, which is how utilities like ReturnType and
+  Awaited are built. I mostly read them in library types, but I can write simple ones.
+</SayIt>
+
+## Template literal types
+
+Los **template literal types** (TS 4.1) usan la sintaxis de los template strings, pero **con tipos**: generan uniones de strings combinando otras.
+
+- `` `on${"click" | "change"}` `` → `"onclick" | "onchange"`.
+- Con uniones en varias posiciones, se genera el **producto cartesiano**: `` `${"sm" | "lg"}-${"red" | "blue"}` `` → 4 combinaciones.
+- Utilidades de strings: `Uppercase`, `Lowercase`, `Capitalize`, `Uncapitalize`.
+- Con `infer` se pueden **parsear** strings: sacar el `:id` de `"/projects/:id"`.
+
+Usos reales: nombres de eventos (`onClick`), claves de traducción (`"projects.title"`), clases de un design system, rutas tipadas, nombres de CSS variables (`` `--${string}` ``).
+
+<Example title="nombres de eventos, variantes y parámetros de rutas (EventName está en types.ts)">
+
+```ts
+type EventName = `on${Capitalize<"click" | "change">}`; // "onClick" | "onChange"
+
+type Size = "sm" | "lg";
+type Tone = "primary" | "danger";
+type ButtonClass = `btn-${Size}-${Tone}`;
+// "btn-sm-primary" | "btn-sm-danger" | "btn-lg-primary" | "btn-lg-danger"
+
+type CssVar = `--${string}`;
+const v: CssVar = "--accent"; // ok
+const w: CssVar = "accent"; // Error: Type '"accent"' is not assignable to type '`--${string}`'.
+
+type RouteParams<S extends string> = S extends `${string}:${infer P}/${infer Rest}`
+  ? P | RouteParams<Rest>
+  : S extends `${string}:${infer P}`
+    ? P
+    : never;
+type P = RouteParams<"/projects/:projectId/entries/:entryId">; // "projectId" | "entryId"
+```
+
+</Example>
+
+<SayIt>
+  Template literal types build string types the way template strings build strings, and with unions
+  they produce every combination. I use them for things like event names, design-system class names
+  or CSS variables, and combined with infer they can even parse route parameters.
+</SayIt>

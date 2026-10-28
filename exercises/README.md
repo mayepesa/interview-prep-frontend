@@ -8,12 +8,16 @@ Cada carpeta tiene:
 - `solution.ts(x)`: una solución comentada. Ábrela solo al terminar.
 
 ```bash
-npm run practice                    # todos los ejercicios en modo watch, contra tus starters
+npm run practice                    # modo watch: corre los ejercicios que ya empezaste
 npm run practice -- 08-accessible   # solo uno
-npm run check:solutions             # verifica que las soluciones pasan
+npm run check:solutions             # verifica que las soluciones de referencia pasan
 ```
 
-Al empezar, todos los tests fallan. Tu objetivo es ponerlos en verde.
+**Los tests de un ejercicio no corren hasta que lo empiezas.** Al principio `npm run practice` muestra los 13 ejercicios como _skipped_ (en amarillo): eso es lo esperado, no un error. Para empezar uno:
+
+1. Abre su `starter.ts(x)`.
+2. Cambia `export const started = false;` por `true`. Sus tests empiezan a correr y fallan en rojo, porque todavía no lo resolviste.
+3. Escribe tu solución hasta que todos sus tests pasen a verde.
 
 ## Cómo practicar para el live coding
 

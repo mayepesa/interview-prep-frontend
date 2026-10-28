@@ -1,0 +1,389 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../app/study";
+import {
+  AutoFillGrid,
+  CenterDemo,
+  ContainerQueryDemo,
+  FlexGrowDemo,
+  FlexPlayground,
+  GridAreas,
+  MediaQueryStatus,
+} from "./flexbox-grid-responsive.examples";
+
+export const meta = {
+  title: "Flexbox, Grid y responsive",
+  section: "css-html",
+  order: 30,
+  summary:
+    "Cómo funcionan Flexbox y Grid, cuándo usar cada uno, cómo centrar, y cómo hacer interfaces responsive con mobile first, media queries, container queries e imágenes adaptables.",
+};
+
+## ¿Cómo funciona Flexbox?
+
+**Flexbox** es un sistema de layout en **una dimensión**: ordena a los hijos de un contenedor en una fila o en una columna. Se activa con `display: flex` en el padre; los hijos directos pasan a ser _flex items_.
+
+Todo gira alrededor de **dos ejes**:
+
+- **Eje principal** (_main axis_): la dirección de `flex-direction`. Con `row` (defecto) es horizontal; con `column`, vertical.
+- **Eje cruzado** (_cross axis_): el perpendicular.
+
+Las propiedades del contenedor:
+
+| Propiedad         | Qué controla                                                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `flex-direction`  | `row`, `column` (y sus versiones `-reverse`): la dirección del eje principal                                              |
+| `justify-content` | Distribución en el **eje principal**: `flex-start`, `center`, `flex-end`, `space-between`, `space-around`, `space-evenly` |
+| `align-items`     | Alineación en el **eje cruzado**: `stretch` (defecto, estira a todos), `flex-start`, `center`, `flex-end`, `baseline`     |
+| `flex-wrap`       | `nowrap` (defecto: todos en una línea, se encogen) o `wrap` (pasan a la línea siguiente)                                  |
+| `gap`             | Espacio entre elementos, sin márgenes ni hacks                                                                            |
+| `align-content`   | Con `wrap`, cómo se reparten las **líneas** en el eje cruzado                                                             |
+
+Lo que más confunde: al cambiar a `flex-direction: column`, `justify-content` pasa a ser vertical y `align-items` horizontal, porque siguen a los ejes, no a la pantalla.
+
+<Example title="playground de flexbox">
+
+```css
+.toolbar {
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between; /* eje principal */
+  align-items: center; /* eje cruzado */
+  flex-wrap: wrap;
+  gap: 8px;
+}
+```
+
+<Live hint="cambia a column y mira cómo justify y align intercambian dirección">
+  <FlexPlayground />
+</Live>
+
+</Example>
+
+<SayIt>
+  Flexbox lays out items in one dimension, a row or a column. justify-content distributes items
+  along the main axis, align-items aligns them on the cross axis, and gap adds spacing. If I switch
+  the direction to column, the two axes swap.
+</SayIt>
+
+## ¿Qué hacen flex-grow, flex-shrink y flex-basis?
+
+Cada _flex item_ decide su tamaño con tres valores, que normalmente se escriben juntos en el atajo `flex: grow shrink basis`:
+
+- **`flex-basis`**: el tamaño **inicial** antes de repartir espacio (`auto` usa el `width` o el contenido).
+- **`flex-grow`**: cuánto **crece** si sobra espacio, en proporción a los demás. Un elemento con `2` toma el doble del espacio sobrante que uno con `1`. Con `0` no crece.
+- **`flex-shrink`**: cuánto se **encoge** si falta espacio. Con `0` no se encoge nunca.
+
+Atajos habituales:
+
+| Atajo             | Equivale a | Uso                                            |
+| ----------------- | ---------- | ---------------------------------------------- |
+| `flex: 1`         | `1 1 0%`   | Ocupa el espacio disponible en partes iguales  |
+| `flex: auto`      | `1 1 auto` | Crece y se encoge desde su tamaño de contenido |
+| `flex: none`      | `0 0 auto` | Tamaño fijo según su contenido                 |
+| `flex: 0 0 240px` | —          | Un sidebar fijo de 240px                       |
+
+<Example title="un fijo, uno que crece, uno flexible">
+
+```css
+.sidebar {
+  flex: 0 0 120px;
+} /* nunca cambia */
+.main {
+  flex: 1 1 0;
+  min-width: 0;
+} /* se queda con lo que sobra */
+.panel {
+  flex: 1 1 120px;
+} /* empieza en 120px, crece y se encoge */
+```
+
+<Live hint="sube el flex-grow del medio y achica el contenedor">
+  <FlexGrowDemo />
+</Live>
+
+</Example>
+
+<Pitfall title="min-width: auto">
+  Un flex item no se encoge por debajo del ancho de su contenido (su `min-width` por defecto es
+  `auto`). Por eso un texto largo o una tabla "rompen" el layout y desbordan. La solución es
+  `min-width: 0` en el item (y, si es texto, `overflow: hidden; text-overflow: ellipsis`).
+</Pitfall>
+
+<SayIt>
+  flex-basis is the starting size, flex-grow says how much of the leftover space an item takes, and
+  flex-shrink how much it gives up when space is short. flex: 1 makes items share the space equally,
+  and I add min-width: 0 when long content refuses to shrink.
+</SayIt>
+
+## ¿Cómo funciona CSS Grid?
+
+**Grid** es un sistema de layout en **dos dimensiones**: defines filas y columnas en el contenedor, y los hijos se colocan en las celdas.
+
+```css
+.board {
+  display: grid;
+  grid-template-columns: 200px 1fr 1fr; /* 3 columnas */
+  grid-template-rows: auto 1fr; /* 2 filas */
+  gap: 16px;
+}
+```
+
+Las piezas clave:
+
+- **`fr`**: una fracción del espacio **libre**. `1fr 2fr` reparte lo que sobra en tercios.
+- **`repeat(n, tamaño)`**: evita repetir. `repeat(7, 1fr)` son siete columnas iguales (un calendario semanal).
+- **`minmax(min, max)`**: una pista que nunca baja de `min` ni pasa de `max`.
+- **`auto-fill` / `auto-fit`**: en lugar de un número fijo, "todas las columnas que quepan". Con `auto-fill` las columnas vacías conservan su espacio; con `auto-fit` se colapsan y las tarjetas existentes se estiran.
+- Los hijos se pueden ubicar explícitamente con `grid-column: 1 / 3` (de la línea 1 a la 3) o `grid-column: span 2`.
+
+La combinación más útil de todo CSS: `repeat(auto-fill, minmax(200px, 1fr))` crea un grid de tarjetas responsive **sin una sola media query**: entran tantas columnas de al menos 200px como quepan, y se estiran para llenar la fila.
+
+<Example title="grid de tarjetas sin media queries">
+
+```css
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 8px;
+}
+```
+
+<Live hint="cambia el mínimo, y con 2 tarjetas compara auto-fill con auto-fit">
+  <AutoFillGrid />
+</Live>
+
+</Example>
+
+<SayIt>
+  Grid is two-dimensional: I define columns and rows on the container and place items in the cells.
+  The fr unit splits the free space, and repeat with auto-fill and minmax gives a responsive card
+  grid without any media queries.
+</SayIt>
+
+## ¿Qué son las grid-template-areas?
+
+`grid-template-areas` permite dibujar el layout con **nombres**, como un mapa ASCII. Cada string es una fila; cada palabra, una celda. Después, cada hijo dice a qué área va con `grid-area`.
+
+Es la forma más legible de definir el layout de una página, y lo mejor: para móvil **solo cambias el mapa** dentro de una media query, sin tocar el HTML. Ojo: el orden visual cambia pero el orden del DOM (y del teclado) no, así que no reordenes de forma que el foco salte de un lado a otro.
+
+<Example title="layout de página con áreas">
+
+```css
+.page {
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-areas: "header" "main" "sidebar" "footer"; /* móvil */
+}
+
+@media (min-width: 768px) {
+  .page {
+    grid-template-columns: 240px 1fr;
+    grid-template-areas:
+      "header  header"
+      "sidebar main"
+      "footer  footer";
+  }
+}
+
+.page > header {
+  grid-area: header;
+}
+.page > aside {
+  grid-area: sidebar;
+}
+.page > main {
+  grid-area: main;
+}
+```
+
+<Live hint="activa 'simular móvil': mismo HTML, otro mapa">
+  <GridAreas />
+</Live>
+
+</Example>
+
+<SayIt>
+  With grid-template-areas I name the regions of the layout and assign each child to an area. For
+  mobile I only redefine the map in a media query, without changing the HTML.
+</SayIt>
+
+## ¿Flexbox o Grid?
+
+No compiten: se combinan. La pregunta útil es **¿el layout es de una o de dos dimensiones?**
+
+| Usa Flexbox cuando…                                                         | Usa Grid cuando…                                                  |
+| --------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Los elementos van en una fila **o** una columna                             | Necesitas filas **y** columnas alineadas                          |
+| El tamaño depende del contenido (_content-first_)                           | El layout define el tamaño (_layout-first_)                       |
+| Barra de herramientas, botones, un ítem de lista con ícono + texto + acción | Layout de página, dashboards, calendarios, un timesheet, galerías |
+
+En la práctica: Grid para la estructura grande de la página y para cualquier tabla visual; Flexbox para alinear cosas dentro de cada pieza.
+
+<SayIt>
+  Flexbox is for one dimension and content-driven sizing, like a toolbar or a row of buttons. Grid
+  is for two dimensions, where rows and columns must line up, like a page layout or a calendar. I
+  often use Grid for the page and Flexbox inside each component.
+</SayIt>
+
+## ¿Cómo centrar un elemento vertical y horizontalmente?
+
+La pregunta clásica. Hoy hay dos respuestas cortas, las dos en el **padre**:
+
+- **Grid**: `display: grid; place-items: center;` (`place-items` es el atajo de `align-items` + `justify-items`).
+- **Flexbox**: `display: flex; justify-content: center; align-items: center;`.
+
+Otras variantes: `margin: auto` en un hijo de flex lo centra en ambas direcciones; `margin: 0 auto` centra horizontalmente un bloque con ancho; y para algo con `position: absolute`, `inset: 0; margin: auto;` con un tamaño definido.
+
+<Example title="las dos formas modernas">
+
+```css
+.center-grid {
+  display: grid;
+  place-items: center;
+}
+
+.center-flex {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+```
+
+<Live>
+  <CenterDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  On the parent, display: grid with place-items: center, or flexbox with justify-content and
+  align-items set to center. Both center horizontally and vertically.
+</SayIt>
+
+## ¿Qué es mobile first y cómo se usan las media queries?
+
+Una **media query** aplica CSS solo si se cumple una condición del dispositivo: ancho del viewport, orientación, tema del sistema, preferencias de movimiento, si hay mouse.
+
+**Mobile first** significa escribir los estilos base para la pantalla más pequeña y **agregar** cambios para pantallas más grandes con `min-width`. Ventajas:
+
+- El CSS base es más simple (en móvil casi todo es una columna).
+- Los teléfonos no descargan ni evalúan estilos de escritorio que después se sobrescriben.
+- Te obliga a priorizar el contenido.
+
+Los _breakpoints_ (puntos de corte) se eligen donde **el contenido se rompe**, no por modelos de teléfono. Valores típicos: 640px, 768px, 1024px, 1280px.
+
+Además del ancho, las media queries de **preferencias** son importantes para la accesibilidad:
+
+- `prefers-color-scheme: dark`: el usuario usa tema oscuro.
+- `prefers-reduced-motion: reduce`: quiere menos animaciones.
+- `hover: hover` / `pointer: coarse`: si tiene mouse o pantalla táctil.
+
+<Example title="mobile first">
+
+```css
+/* base: móvil */
+.timesheet { display: grid; gap: 8px; }
+
+/* tablet en adelante */
+@media (min-width: 768px) {
+  .timesheet { grid-template-columns: repeat(7, 1fr); }
+}
+
+/* sintaxis de rango, soportada en navegadores modernos */
+@media (width >= 1024px) { … }
+```
+
+```ts
+// desde JS: window.matchMedia
+const isWide = window.matchMedia("(min-width: 1024px)").matches;
+```
+
+<Live hint="cambia el ancho de la ventana o el tema del sistema">
+  <MediaQueryStatus />
+</Live>
+
+</Example>
+
+<SayIt>
+  Mobile first means the base styles target small screens, and I add min-width media queries to
+  enhance the layout as space grows. I pick breakpoints where the content breaks, and I also respect
+  user preferences like dark mode and reduced motion.
+</SayIt>
+
+## ¿Qué son las container queries?
+
+Las media queries miran el **viewport**. Pero un componente reutilizable (una tarjeta) puede vivir en un sidebar angosto o en el contenido principal ancho **en la misma pantalla**. Lo que le importa es el ancho de **su contenedor**, no el de la ventana.
+
+Las **container queries** resuelven eso:
+
+1. Marcas un ancestro como contenedor: `container-type: inline-size` (mide el ancho). Opcionalmente le das nombre con `container-name`.
+2. Escribes `@container (min-width: 400px) { … }`: aplica cuando **ese contenedor** mide al menos 400px.
+3. Hay unidades relativas al contenedor: `cqi` (1% del ancho del contenedor), `cqb`.
+
+Están soportadas en todos los navegadores modernos desde 2023.
+
+<Example title="tarjeta que se adapta a su contenedor">
+
+```css
+.card-wrapper {
+  container-type: inline-size;
+}
+
+.card {
+  display: grid;
+  gap: 8px;
+}
+
+@container (min-width: 400px) {
+  .card {
+    grid-template-columns: 120px 1fr;
+  } /* imagen al lado del texto */
+}
+```
+
+<Live hint="arrastra la esquina del recuadro: el layout cambia sin tocar la ventana">
+  <ContainerQueryDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  Media queries respond to the viewport, container queries respond to the size of a parent
+  container. That makes components truly reusable: the same card can be stacked in a narrow sidebar
+  and side by side in the main area.
+</SayIt>
+
+## ¿Cómo hacer imágenes responsive?
+
+Tres herramientas de HTML, de la más simple a la más completa:
+
+- **CSS**: `img { max-width: 100%; height: auto; }` para que nunca desborde.
+- **`srcset` + `sizes`**: le das al navegador varias versiones de la misma imagen y él elige la adecuada según el ancho de pantalla y la densidad de píxeles. Así un teléfono no descarga una imagen de 2000px.
+- **`<picture>`**: para cambiar de **formato** (AVIF, WebP, con JPEG de respaldo) o de **recorte** (_art direction_) según la pantalla.
+
+Y siempre `width` y `height` en el `<img>` para que el navegador reserve el espacio y la página no salte al cargar (más detalles en la página de performance web).
+
+<Example title="srcset y picture">
+
+```html
+<img
+  src="team-800.jpg"
+  srcset="team-400.jpg 400w, team-800.jpg 800w, team-1600.jpg 1600w"
+  sizes="(min-width: 1024px) 50vw, 100vw"
+  width="800"
+  height="450"
+  alt="El equipo en la oficina"
+/>
+
+<picture>
+  <source srcset="hero.avif" type="image/avif" />
+  <source srcset="hero.webp" type="image/webp" />
+  <img src="hero.jpg" width="1200" height="600" alt="" />
+</picture>
+```
+
+</Example>
+
+<SayIt>
+  I use srcset and sizes so the browser downloads the right resolution for each screen, picture for
+  modern formats like AVIF with a fallback, and always set width and height to avoid layout shift.
+</SayIt>

@@ -1,0 +1,550 @@
+import { Example, Live, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../app/study";
+import { TimeEntryFormLive } from "./testing.examples";
+
+export const meta = {
+  title: "Testing en front end",
+  section: "testing",
+  order: 10,
+  summary:
+    "Para qué y qué testear, la pirámide y el trofeo, Vitest con mocks y timers falsos, React Testing Library (queries, userEvent, async), MSW, hooks con renderHook, cobertura, E2E con Playwright y tests de performance. Con los tests reales de este repo.",
+};
+
+## ¿Por qué escribir tests?
+
+Un test es código que **ejecuta tu código y comprueba el resultado** automáticamente. No es para demostrar que funciona hoy (eso lo ves probando a mano), sino para:
+
+- **Refactorizar con confianza**: cambias la implementación y, si los tests siguen en verde, el comportamiento no cambió.
+- **Atrapar regresiones**: un cambio en un lado rompe otra pantalla que no tocaste, y CI lo detecta antes que el usuario.
+- **Documentar**: un buen test muestra cómo se usa un componente y qué casos borde contempla.
+- **Diseñar mejor**: el código difícil de testear suele estar demasiado acoplado.
+
+Lo que importa no es la cantidad de tests, sino **cuánta confianza** dan por el costo de escribirlos y mantenerlos.
+
+<SayIt>
+  Tests let me refactor with confidence and catch regressions before users do. They also document
+  how the code is supposed to behave. I care about how much confidence a test gives me compared to
+  what it costs to maintain.
+</SayIt>
+
+## ¿Qué son la pirámide y el trofeo de testing?
+
+Hay tres niveles principales de tests:
+
+| Nivel                | Qué prueba                                         | Velocidad    | Confianza     | Herramientas                   |
+| -------------------- | -------------------------------------------------- | ------------ | ------------- | ------------------------------ |
+| **Unit**             | Una función, un hook o un componente aislado       | Milisegundos | Baja por test | Vitest, Jest                   |
+| **Integration**      | Varios componentes juntos, con la red simulada     | Rápidos      | Alta          | Vitest + Testing Library + MSW |
+| **E2E** (end-to-end) | La app real en un navegador real, de punta a punta | Segundos     | La más alta   | Playwright, Cypress            |
+
+La **pirámide de testing** clásica dice: muchos unit tests en la base, menos de integración y pocos E2E arriba, porque los de arriba son lentos y frágiles.
+
+El **trofeo de testing** (Kent C. Dodds, autor de Testing Library) adapta la idea al front end: en la base **análisis estático** (TypeScript, ESLint), luego unit, y la parte **más ancha es la de integración**, con unos pocos E2E. La razón: un test que renderiza un formulario completo y lo usa como el usuario da mucha más confianza que diez tests que prueban funciones sueltas, y con Testing Library + MSW ya no es lento.
+
+Regla práctica: **lógica pura** (cálculos, reducers, utilidades) → unit tests. **Componentes y pantallas** → integración. **Flujos críticos de negocio** (login, registrar horas, pagar) → E2E.
+
+<SayIt>
+  Unit tests cover isolated functions, integration tests render several components together with the
+  network mocked, and end-to-end tests drive the real app in a browser. For front end I follow the
+  testing trophy: static typing at the base, and most of the effort in integration tests, with a few
+  E2E tests for critical flows.
+</SayIt>
+
+## ¿Cómo se escribe un test con Vitest (o Jest)?
+
+**Vitest** es el test runner nativo de Vite; su API es casi idéntica a la de **Jest**, así que lo que sabes de uno sirve para el otro. Un test tiene tres partes, el patrón **AAA**: _Arrange_ (preparar), _Act_ (ejecutar), _Assert_ (comprobar).
+
+- `describe("nombre", () => { … })` agrupa tests relacionados.
+- `it("hace algo", () => { … })` (o `test`) define un test. El nombre describe el **comportamiento** esperado.
+- `expect(valor).matcher(esperado)` comprueba. Matchers comunes: `toBe` (igualdad con `Object.is`, para primitivos), `toEqual` (igualdad profunda, para objetos y arrays), `toBeNull`, `toContain`, `toThrow`, `toHaveBeenCalledWith`. Con `.not` se niegan.
+- `beforeEach` / `afterEach` preparan y limpian el estado antes y después de cada test.
+
+<Example title="tests reales de este repo (src/08-cs-fundamentals/cs.test.ts y src/07-security/sanitize.test.ts)">
+
+```ts
+import { describe, expect, it } from "vitest";
+import { twoSum } from "./algorithms";
+
+describe("algorithms", () => {
+  it("twoSum", () => {
+    expect(twoSum([2, 7, 11, 15], 9)).toEqual([0, 1]); // toEqual: compara contenido
+    expect(twoSum([1, 2], 10)).toBeNull();
+  });
+});
+
+describe("sanitizeHtml", () => {
+  it("removes scripts and event handlers", () => {
+    expect(sanitizeHtml('<p onclick="steal()">texto</p>')).toBe("<p>texto</p>");
+  });
+});
+```
+
+</Example>
+
+<Tip>
+  Para correr los tests de este repo: `npm test` (una vez) o `npm run test:watch` (se repiten al
+  guardar).
+</Tip>
+
+<SayIt>
+  A test follows arrange, act, assert. I group tests with describe, name each one after the behavior
+  it checks, and use expect with matchers like toBe for primitives and toEqual for objects. Vitest
+  and Jest share almost the same API.
+</SayIt>
+
+## ¿Qué son los mocks y los spies?
+
+Un **mock** reemplaza una dependencia real por una falsa que tú controlas, para aislar lo que pruebas y simular casos difíciles (un error del servidor, una respuesta lenta).
+
+- **`vi.fn()`** (`jest.fn()`): una función falsa que **registra cada llamada**. Puedes preguntar cuántas veces se llamó y con qué argumentos, y decidir qué devuelve:
+  - `vi.fn().mockReturnValue(x)`, `.mockResolvedValue(x)` (promesa que resuelve), `.mockRejectedValue(err)` (promesa que falla), `.mockImplementation(fn)`.
+  - Comprobaciones: `toHaveBeenCalled()`, `toHaveBeenCalledTimes(n)`, `toHaveBeenCalledWith(args)`.
+- **`vi.spyOn(objeto, "metodo")`**: un **spy** envuelve un método existente y registra las llamadas, sin reemplazarlo (salvo que le pongas una implementación). Se restaura con `mockRestore()`.
+- **`vi.mock("./module")`**: reemplaza un módulo entero en todos sus imports.
+- **`vi.stubGlobal("fetch", mock)`**: reemplaza un global.
+
+<Pitfall>
+  No mockees todo. Cuantos más mocks, menos se parece el test a la realidad y más se acopla a la
+  implementación. Mockea los **bordes** del sistema (red, tiempo, almacenamiento, APIs del
+  navegador), no tus propios componentes.
+</Pitfall>
+
+<Example title="un vi.fn hecho a mano para entender qué hace">
+
+```ts
+// en un test: la prop onSubmit es un mock que resuelve
+const onSubmit = vi.fn().mockResolvedValue(undefined);
+render(<TimeEntryForm projects={projects} onSubmit={onSubmit} />);
+// … el usuario completa el formulario …
+expect(onSubmit).toHaveBeenCalledWith({ project: "Planner", hours: 2.5, description: "Code review" });
+
+// spy sobre un método real
+const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+```
+
+<Run
+  label="Crear un mock y llamarlo"
+  run={(log) => {
+    function fn(impl = () => undefined) {
+      const mock = (...args) => {
+        mock.calls.push(args);
+        return impl(...args);
+      };
+      mock.calls = [];
+      return mock;
+    }
+    const onSubmit = fn(() => "ok");
+    onSubmit({ project: "Planner", hours: 2 });
+    onSubmit({ project: "Reports", hours: 1 });
+    log("veces llamado:", onSubmit.calls.length);
+    log("argumentos de la 1ª llamada:", onSubmit.calls[0]);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A mock replaces a dependency with a fake I control. vi.fn records every call, so I can assert it
+  was called with the right arguments, and I can make it resolve or reject to simulate the server. A
+  spy wraps a real method to observe it. I mock the edges of the system, like network and time, not
+  my own components.
+</SayIt>
+
+## ¿Cuál es la filosofía de React Testing Library?
+
+**React Testing Library** (RTL) renderiza componentes en un DOM simulado (jsdom) y te da herramientas para **encontrar elementos e interactuar como lo haría un usuario**. Su principio guía:
+
+> _The more your tests resemble the way your software is used, the more confidence they can give you._
+
+Consecuencias prácticas:
+
+- **Pruebas comportamiento, no implementación.** Nada de leer el estado interno, llamar métodos del componente o comprobar nombres de clases. Si refactorizas de `useState` a `useReducer` y la pantalla se comporta igual, los tests no deberían romperse.
+- **Buscas elementos como el usuario**: por su rol y su texto visible, no por un selector CSS.
+- **Interactúas como el usuario**: escribir, hacer clic, tabular.
+- **Compruebas lo que el usuario ve**: textos, mensajes, botones deshabilitados.
+
+Como efecto secundario, empuja hacia componentes accesibles: si no puedes encontrar un botón por su rol y nombre, un lector de pantalla tampoco.
+
+Este es el componente que prueba `src/06-testing/TimeEntryForm.test.tsx`. Úsalo y piensa qué comprobaría cada test.
+
+<Example title="el componente bajo prueba">
+
+```tsx
+<TimeEntryForm projects={["Planner", "Reports"]} onSubmit={onSubmit} />
+```
+
+<Live hint="envía vacío, luego completa, y prueba con el error del servidor">
+  <TimeEntryFormLive />
+</Live>
+
+</Example>
+
+<SayIt>
+  Testing Library's idea is to test components the way users use them: find elements by role and
+  visible text, interact with them, and assert what appears on screen. I test behavior, not
+  implementation details, so the tests survive refactors.
+</SayIt>
+
+## ¿Qué query usar? La prioridad de Testing Library
+
+La documentación de Testing Library recomienda este orden:
+
+1. **`getByRole`** con `name`: `getByRole("button", { name: "Registrar horas" })`. Es la preferida: usa el árbol de accesibilidad, igual que un lector de pantalla. Roles comunes: `button`, `link`, `textbox`, `checkbox`, `combobox` (select), `heading`, `alert`, `status`, `dialog`, `list`, `listitem`.
+2. **`getByLabelText`**: para campos de formulario, por su label. `getByLabelText("Horas")`.
+3. **`getByPlaceholderText`**: solo si no hay label (que ya es un problema).
+4. **`getByText`**: para texto que no es interactivo (párrafos, mensajes).
+5. **`getByDisplayValue`**: el valor actual de un input.
+6. **`getByAltText`**, **`getByTitle`**.
+7. **`getByTestId`**: el último recurso, cuando nada de lo anterior sirve. Un `data-testid` es invisible para el usuario.
+
+Para encontrar dentro de una parte de la pantalla: `within(screen.getByRole("dialog")).getByRole("button", { name: "Cerrar" })`.
+
+<Example title="queries en el test del formulario">
+
+```tsx
+await user.selectOptions(screen.getByLabelText("Proyecto"), "Planner");
+await user.type(screen.getByLabelText("Horas"), "2.5");
+await user.click(screen.getByRole("button", { name: "Registrar horas" }));
+
+// accesibilidad comprobada en el mismo test
+expect(screen.getByLabelText("Horas")).toHaveAttribute("aria-invalid", "true");
+expect(screen.getByLabelText("Horas")).toHaveAccessibleDescription("Entre 0.25 y 24 horas");
+```
+
+</Example>
+
+<SayIt>
+  I query by role with an accessible name first, then by label for form fields, then by text. Test
+  ids are a last resort. Querying by role also checks accessibility: if I can't find the button by
+  its role, a screen reader can't either.
+</SayIt>
+
+## ¿Qué diferencia hay entre getBy, queryBy y findBy?
+
+Cada query existe en tres variantes (y en plural, `getAllBy…`, para varios elementos):
+
+| Variante   | Si no encuentra     | Si encuentra varios | Async                        | Para…                                                       |
+| ---------- | ------------------- | ------------------- | ---------------------------- | ----------------------------------------------------------- |
+| `getBy…`   | **Lanza error**     | Lanza error         | No                           | Lo que **debe estar** ahora                                 |
+| `queryBy…` | Devuelve **`null`** | Lanza error         | No                           | Afirmar que algo **no está**                                |
+| `findBy…`  | Rechaza (tras ~1 s) | Rechaza             | **Sí**, devuelve una promesa | Lo que **va a aparecer** (después de un fetch, de un timer) |
+
+`findBy` es `getBy` + `waitFor`: reintenta hasta que aparece o se acaba el tiempo.
+
+<Example title="las tres en los tests del repo">
+
+```tsx
+// getBy: tiene que estar ya
+expect(screen.getByText("Elige un proyecto")).toBeInTheDocument();
+
+// queryBy: comprobar que NO está (getBy lanzaría error)
+expect(screen.queryByText("Fila 0")).not.toBeInTheDocument();
+
+// findBy: aparece después de que la promesa de onSubmit resuelve
+expect(await screen.findByRole("status")).toHaveTextContent("Horas registradas");
+```
+
+</Example>
+
+<Pitfall>
+  `expect(screen.getByText("x")).not.toBeInTheDocument()` nunca funciona: si no está, `getBy` lanza
+  error antes de llegar al `expect`. Para la ausencia, siempre `queryBy`.
+</Pitfall>
+
+<SayIt>
+  getBy throws if the element isn't there, so I use it for things that must exist. queryBy returns
+  null, so I use it to assert something is absent. findBy returns a promise and retries, for
+  elements that appear asynchronously.
+</SayIt>
+
+## ¿userEvent o fireEvent?
+
+- **`fireEvent`** dispara **un único evento** del DOM: `fireEvent.change(input, { target: { value: "hola" } })`. Es bajo nivel.
+- **`userEvent`** (de `@testing-library/user-event`) simula la **interacción completa** de una persona: al escribir, enfoca el input y dispara `keydown`, `keypress`, `input`, `keyup` por cada carácter; al hacer clic, `pointerdown`, `mousedown`, `focus`, `mouseup`, `click`. Respeta elementos deshabilitados y el foco.
+
+Por eso **userEvent es la opción por defecto**: detecta bugs que `fireEvent` no ve (un botón deshabilitado, un `onKeyDown` que no se disparaba). Desde la v14 se usa con `setup()` y todas sus acciones son **async**, así que van con `await`.
+
+`fireEvent` sigue siendo útil para eventos que userEvent no cubre, como `scroll` (lo usa `VirtualList.test.tsx`).
+
+<Example title="userEvent y fireEvent en el repo">
+
+```tsx
+// TimeEntryForm.test.tsx
+const user = userEvent.setup();
+render(<TimeEntryForm projects={projects} onSubmit={onSubmit} />);
+await user.type(screen.getByLabelText("Horas"), "2.5");
+
+// VirtualList.test.tsx: scroll no existe en userEvent
+fireEvent.scroll(screen.getByRole("list"), { target: { scrollTop: 30_000 } });
+expect(screen.getByText("Fila 1000")).toBeInTheDocument();
+```
+
+</Example>
+
+<SayIt>
+  fireEvent dispatches a single DOM event, while userEvent simulates the full interaction, like
+  focus and every key event when typing. I default to userEvent with setup and await each action,
+  and use fireEvent for events it doesn't cover, like scroll.
+</SayIt>
+
+## ¿Cómo testear UI asíncrona?
+
+Casi todo en una app real es asíncrono: un fetch, un `setTimeout`, una promesa en un submit. Las herramientas:
+
+- **`findBy…`**: espera a que un elemento aparezca. Es la forma más común.
+- **`waitFor(() => expect(…))`**: reintenta una aserción hasta que pase. Para cosas que no son "aparece un elemento" (que se llamó un mock, que desapareció un spinner).
+- **`waitForElementToBeRemoved`**: esperar a que algo desaparezca.
+- **`act()`**: le dice a React "procesa todas las actualizaciones pendientes antes de seguir". RTL ya envuelve `render`, `userEvent` y `findBy` en `act`, así que lo usas a mano solo cuando provocas actualizaciones desde fuera (avanzar timers falsos, llamar a un callback de un hook).
+
+<Example title="estado de carga y error del servidor">
+
+```tsx
+it("disables the button while saving", async () => {
+  let finish!: () => void;
+  const { user } = setup(vi.fn(() => new Promise<void>((resolve) => (finish = resolve))));
+
+  await user.selectOptions(screen.getByLabelText("Proyecto"), "Reports");
+  await user.type(screen.getByLabelText("Horas"), "1");
+  await user.click(screen.getByRole("button", { name: "Registrar horas" }));
+
+  expect(screen.getByRole("button", { name: "Guardando…" })).toBeDisabled();
+  finish(); // resolvemos la promesa cuando queremos
+  expect(await screen.findByRole("button", { name: "Registrar horas" })).toBeEnabled();
+});
+
+it("shows a server error", async () => {
+  const { user } = setup(vi.fn().mockRejectedValue(new Error("500")));
+  // … completar y enviar …
+  expect(await screen.findByText("No se pudo guardar. Intenta de nuevo.")).toBeInTheDocument();
+});
+```
+
+</Example>
+
+<Pitfall title="El warning de act">
+  "An update to X inside a test was not wrapped in act(...)" casi siempre significa que el test
+  **terminó antes** de que algo asíncrono actualizara el estado. La solución no es envolver todo en
+  `act`, sino **esperar** el resultado con `findBy` o `waitFor`.
+</Pitfall>
+
+<SayIt>
+  For async UI I wait for the result the user would see, usually with findBy, or waitFor for other
+  assertions. To test a loading state I give the mock a promise I resolve manually. If I see an act
+  warning, it usually means the test didn't wait for an async update.
+</SayIt>
+
+## ¿Cómo mockear la red? fetch y MSW
+
+Hay dos formas habituales:
+
+1. **Mockear `fetch` directamente** con `vi.stubGlobal("fetch", vi.fn())` y devolver un `Response`. Sirve para casos aislados, pero acopla el test a **cómo** se hace la petición (fetch vs axios vs React Query).
+2. **MSW (Mock Service Worker)**: defines **handlers por endpoint** (`GET /api/projects` responde tal cosa) y MSW intercepta las peticiones **a nivel de red**. Tu código usa `fetch` o axios normalmente, sin saber que hay un mock. Los mismos handlers sirven en tests (Node), en Storybook y en desarrollo (en el navegador, con un Service Worker). Es la opción recomendada para tests de integración.
+
+<Example title="mock de fetch en ProjectSearch.test.tsx, y lo mismo con MSW">
+
+```tsx
+// src/06-testing/ProjectSearch.test.tsx
+const fetchMock = vi.fn();
+beforeEach(() => vi.stubGlobal("fetch", fetchMock));
+afterEach(() => vi.unstubAllGlobals());
+
+const ok = (data: unknown) => Promise.resolve(new Response(JSON.stringify(data), { status: 200 }));
+
+it("shows an error when the API fails", async () => {
+  fetchMock.mockImplementation(() => Promise.resolve(new Response("", { status: 500 })));
+  // …
+  expect(await screen.findByRole("alert")).toHaveTextContent("Error al buscar");
+});
+```
+
+```ts
+// con MSW (v2)
+import { http, HttpResponse } from "msw";
+import { setupServer } from "msw/node";
+
+const server = setupServer(
+  http.get("/api/projects", ({ request }) => {
+    const q = new URL(request.url).searchParams.get("q");
+    return HttpResponse.json([{ id: 1, name: `Time tracker (${q})` }]);
+  }),
+);
+
+beforeAll(() => server.listen());
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+// en un test, sobrescribir para el caso de error
+server.use(http.get("/api/projects", () => new HttpResponse(null, { status: 500 })));
+```
+
+</Example>
+
+<SayIt>
+  For a quick isolated test I stub fetch with vi.fn. For integration tests I prefer MSW: it
+  intercepts requests at the network level, so the component code doesn't change, and the same
+  handlers work in tests, Storybook and local development.
+</SayIt>
+
+## ¿Cómo testear código con timers (debounce, setTimeout)?
+
+Esperar 300 ms reales en cada test haría la suite lenta e inestable. Los **timers falsos** reemplazan `setTimeout`, `setInterval` y `Date` por versiones que **tú haces avanzar**:
+
+- `vi.useFakeTimers()` al empezar y `vi.useRealTimers()` al terminar.
+- `vi.advanceTimersByTime(ms)` avanza el reloj y ejecuta los timers que vencen; `vi.advanceTimersByTimeAsync(ms)` también deja correr las promesas.
+- `vi.runAllTimers()` ejecuta todo lo pendiente.
+- Con `userEvent`, como internamente usa timers, hay que pasarle `advanceTimers: vi.advanceTimersByTime`.
+
+<Example title="un debounce testeado en milisegundos">
+
+```tsx
+// ProjectSearch.test.tsx: escribir "time" hace UNA sola petición tras 300 ms
+beforeEach(() => vi.useFakeTimers({ shouldAdvanceTime: true }));
+
+it("debounces typing into a single request", async () => {
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  render(<ProjectSearch />);
+
+  await user.type(screen.getByLabelText("Buscar proyecto"), "time");
+  expect(fetchMock).not.toHaveBeenCalled();
+
+  await act(() => vi.advanceTimersByTimeAsync(300));
+
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/projects?q=time");
+});
+```
+
+</Example>
+
+<SayIt>
+  For anything time-based I use fake timers, so the test controls the clock: I advance it by exactly
+  the debounce delay and assert that only one request was made. With userEvent I pass advanceTimers
+  so they work together.
+</SayIt>
+
+## ¿Cómo se testea un custom hook?
+
+Un hook solo puede llamarse dentro de un componente. **`renderHook`** (de `@testing-library/react`) crea un componente de prueba que lo llama y te devuelve:
+
+- `result.current`: lo que devolvió el hook en el **último** render.
+- `rerender(newProps)`: vuelve a renderizar con otros argumentos.
+- `unmount()`: para probar el cleanup.
+
+Las acciones que actualizan estado del hook van dentro de `act()`.
+
+Si el hook se usa siempre dentro de un componente concreto, a veces es mejor probar ese componente. `renderHook` brilla con hooks reutilizables (`useDebouncedValue`, `useLocalStorage`).
+
+<Example title="src/03-react/hooks/hooks.test.ts">
+
+```ts
+it("only updates after the value stops changing", () => {
+  vi.useFakeTimers();
+  const { result, rerender } = renderHook(({ value }) => useDebouncedValue(value, 300), {
+    initialProps: { value: "a" },
+  });
+
+  rerender({ value: "ab" });
+  rerender({ value: "abc" });
+  act(() => vi.advanceTimersByTime(299));
+  expect(result.current).toBe("a");
+
+  act(() => vi.advanceTimersByTime(1));
+  expect(result.current).toBe("abc");
+});
+
+it("persists the value", () => {
+  const { result } = renderHook(() => useLocalStorage("hours", 8, isNumber));
+  act(() => result.current[1](6)); // llamar al setter del hook
+  expect(localStorage.getItem("hours")).toBe("6");
+});
+```
+
+</Example>
+
+<SayIt>
+  I test reusable hooks with renderHook: it mounts the hook in a test component, result.current
+  gives me the latest return value, rerender changes its arguments, and state updates go inside act.
+</SayIt>
+
+## ¿Qué testear y cuánta cobertura buscar?
+
+**Qué testear**, por prioridad:
+
+1. **Flujos críticos de negocio**: lo que si se rompe cuesta dinero o confianza (registrar horas, aprobar, pagar, login).
+2. **Lógica con reglas**: validaciones, cálculos, permisos, reducers, formateo.
+3. **Casos borde**: vacío, error del servidor, cargando, datos muy largos, sin permisos.
+4. **Bugs que ya pasaron**: cada bug arreglado con su test para que no vuelva.
+
+**Qué no testear**: detalles de implementación (estado interno, nombres de funciones), código de librerías (React ya está testeado), estilos, y snapshots gigantes que nadie revisa cuando cambian.
+
+**Cobertura** (_coverage_): el porcentaje de líneas, ramas y funciones que los tests ejecutan (`vitest run --coverage`). Es útil para **encontrar código sin probar**, pero un número alto no garantiza calidad: un test sin `expect` también suma cobertura. Muchos equipos fijan un mínimo razonable (70–80%) para no retroceder, sin perseguir el 100%.
+
+<SayIt>
+  I prioritize critical user flows, business logic, edge cases like errors and empty states, and a
+  regression test for every bug I fix. Coverage is a useful signal to find untested code, but I
+  don't chase a number: a hundred percent coverage with weak assertions is worth less than fewer
+  tests that catch real bugs.
+</SayIt>
+
+## ¿Cómo son los tests E2E con Playwright?
+
+Un test **end-to-end** abre la app real en un **navegador real** (Chromium, Firefox, WebKit) y la usa como un usuario: navega, hace clic, completa formularios, contra un backend real o de pruebas. Es el test que más se parece a producción, y también el más lento y el más propenso a fallar por razones ajenas (red, datos).
+
+**Playwright** (de Microsoft) es hoy la herramienta más usada; **Cypress** es la otra opción conocida. Ventajas de Playwright:
+
+- **Locators** parecidos a Testing Library: `page.getByRole("button", { name: "Guardar" })`.
+- **Auto-waiting**: espera a que el elemento sea visible y esté habilitado antes de actuar, sin `sleep`.
+- Varios navegadores, ejecución en paralelo, y un **trace viewer** con capturas paso a paso para depurar fallos en CI.
+
+Úsalos para **pocos flujos críticos**, y corre el resto con tests de integración.
+
+<Example title="registrar horas de punta a punta">
+
+```ts
+import { expect, test } from "@playwright/test";
+
+test("a user logs time", async ({ page }) => {
+  await page.goto("/timesheet");
+  await page.getByLabel("Proyecto").selectOption("Planner");
+  await page.getByLabel("Horas").fill("2.5");
+  await page.getByRole("button", { name: "Registrar horas" }).click();
+
+  await expect(page.getByRole("status")).toHaveText("Horas registradas");
+});
+```
+
+</Example>
+
+<SayIt>
+  End-to-end tests run the real app in a real browser. I use Playwright for a few critical flows:
+  its locators work like Testing Library and it waits automatically, which keeps tests stable.
+  Everything else I cover with faster integration tests.
+</SayIt>
+
+## ¿Qué son los tests de performance?
+
+Son tests que fallan cuando el rendimiento **empeora**, para atrapar regresiones antes de producción:
+
+- **Presupuesto de bundle** en CI: `size-limit` o el reporte del bundler falla si el JS crece más de X kB.
+- **Lighthouse CI**: corre Lighthouse en cada PR y falla si LCP, CLS o el puntaje bajan de un umbral.
+- **Tests de componentes**: contar renders (con un `<Profiler>` o un mock) para asegurar que escribir en un input no re-renderiza una tabla; o comprobar que una lista virtualizada pinta pocas filas, como hace `VirtualList.test.tsx`.
+- **Benchmarks** de funciones críticas con `bench` de Vitest.
+- **En producción**: monitoreo de Web Vitals de usuarios reales con alertas.
+
+<Example title="que la lista virtualizada no pinte 100 000 filas">
+
+```tsx
+// src/05-performance/VirtualList.test.tsx
+it("renders only a window of rows", () => {
+  const items = Array.from({ length: 100_000 }, (_, i) => `Fila ${i}`);
+  render(<VirtualList items={items} rowHeight={30} height={300} renderRow={(t) => t} />);
+  expect(screen.getAllByRole("listitem").length).toBeLessThan(30);
+});
+```
+
+</Example>
+
+<SayIt>
+  For performance I add guards in CI: a bundle size budget and Lighthouse CI thresholds. At the
+  component level I can assert things like a virtualized list rendering only a few rows, or count
+  renders with the Profiler. And in production, real-user Web Vitals with alerts.
+</SayIt>

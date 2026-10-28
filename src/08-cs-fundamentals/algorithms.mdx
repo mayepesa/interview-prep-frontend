@@ -1,0 +1,437 @@
+import { Example, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../app/study";
+import {
+  binarySearch,
+  fib,
+  firstUniqueChar,
+  flatten,
+  isAnagram,
+  isBalanced,
+  isPalindrome,
+  mergeIntervals,
+  mergeSorted,
+  twoSum,
+} from "./algorithms";
+
+export const meta = {
+  title: "Algoritmos",
+  section: "cs",
+  order: 30,
+  summary:
+    "Cómo resolver un ejercicio en vivo y los patrones que más aparecen en entrevistas de front end: hash map (two sum, anagramas), pila, búsqueda binaria, dos punteros, intervalos, recursión y memoización. Cada uno con su complejidad y código para ejecutar.",
+};
+
+## ¿Cómo resolver un ejercicio de código en vivo?
+
+En una entrevista de front end los ejercicios no suelen ser difíciles: lo que se evalúa es **cómo piensas y cómo te comunicas**. Un proceso que funciona:
+
+1. **Repite el problema con tus palabras** y confirma la entrada y la salida esperada.
+2. **Pregunta por los casos borde**: ¿el array puede estar vacío?, ¿hay duplicados?, ¿números negativos?, ¿mayúsculas?, ¿está ordenado?
+3. **Haz un ejemplo pequeño a mano** antes de escribir código.
+4. **Di primero la solución simple** y su complejidad, aunque sea lenta: "con dos loops sería O(n²)".
+5. **Propón la mejora**: "si guardo lo que ya vi en un Map, lo bajo a O(n)". Pregunta si quieren que la escribas.
+6. **Escribe el código hablando**: nombres claros, funciones pequeñas.
+7. **Pruébalo en voz alta** con el ejemplo y con un caso borde.
+8. **Di la complejidad final** de tiempo y espacio, aunque no te la pregunten.
+
+Si te trabas, dilo y piensa en voz alta: el entrevistador puede darte una pista, pero solo si sabe dónde estás.
+
+La mayoría de los ejercicios encajan en pocos **patrones**: hash map para buscar rápido, pila para anidamiento, dos punteros sobre datos ordenados, recursión para estructuras anidadas, memoización para no repetir trabajo. El código de esta página está en `src/08-cs-fundamentals/algorithms.ts`, con tests en `cs.test.ts`.
+
+<SayIt>
+  Let me restate the problem and check a few edge cases first. The brute-force approach would be O(n
+  squared); I think I can get it to O(n) with a hash map. I'll write it, then walk through an
+  example and an edge case, and give the time and space complexity at the end.
+</SayIt>
+
+## Two Sum: el patrón del hash map
+
+**Problema**: dado un array de números y un `target`, devuelve los índices de los dos números que suman `target`.
+
+- **Fuerza bruta**: probar todos los pares con dos loops. O(n²) tiempo, O(1) espacio.
+- **Con un Map**: recorres una vez; para cada número calculas el que **te falta** (`target - num`) y preguntas al Map si ya lo viste. Si sí, terminaste; si no, guardas el número actual con su índice. O(n) tiempo, O(n) espacio.
+
+Es el ejemplo perfecto de **cambiar memoria por tiempo**: "guardar lo que ya vi para no tener que buscarlo".
+
+<Example title="two sum en una pasada">
+
+```ts
+export function twoSum(nums: number[], target: number): [number, number] | null {
+  const seen = new Map<number, number>(); // valor → índice
+  for (let i = 0; i < nums.length; i++) {
+    const needed = target - nums[i]!;
+    if (seen.has(needed)) return [seen.get(needed)!, i];
+    seen.set(nums[i]!, i);
+  }
+  return null;
+}
+```
+
+<Run
+  label="Ejecutar"
+  run={(log) => {
+    log("twoSum([2, 7, 11, 15], 9) →", twoSum([2, 7, 11, 15], 9));
+    log("twoSum([3, 2, 4], 6)      →", twoSum([3, 2, 4], 6));
+    log("twoSum([1, 2], 10)        →", twoSum([1, 2], 10));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  The brute force checks every pair, which is O(n squared). Instead I walk the array once and, for
+  each number, look up its complement in a Map of numbers I've already seen. If it's there I return
+  both indexes, otherwise I store the current one. That's O(n) time and O(n) space.
+</SayIt>
+
+## Contar con un Map: anagramas y primer carácter único
+
+Muchos problemas de strings se resuelven **contando ocurrencias** en un `Map` (carácter → cantidad):
+
+- **Anagramas** ("listen" y "silent"): cuenta las letras de la primera palabra y descuéntalas con la segunda. Si algo no cuadra, no son anagramas. O(n). Ordenar ambos strings y compararlos también funciona, pero es O(n log n).
+- **Primer carácter que no se repite**: una pasada para contar, otra para encontrar el primero con cuenta 1. O(n).
+
+<Example title="contar letras">
+
+```ts
+const counts = new Map<string, number>();
+for (const c of text) counts.set(c, (counts.get(c) ?? 0) + 1);
+```
+
+<Run
+  label="Ejecutar"
+  run={(log) => {
+    log('isAnagram("listen", "silent") →', isAnagram("listen", "silent"));
+    log('isAnagram("abc", "abd")       →', isAnagram("abc", "abd"));
+    log('firstUniqueChar("aabbcdd")    →', firstUniqueChar("aabbcdd"));
+    log('firstUniqueChar("aabb")       →', firstUniqueChar("aabb"));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  For string problems like anagrams I count characters in a Map, which is linear. Sorting both
+  strings also works but costs n log n.
+</SayIt>
+
+## Paréntesis balanceados: el patrón de la pila
+
+**Problema**: ¿un string tiene los paréntesis, corchetes y llaves bien cerrados? `"{[()]}"` sí; `"([)]"` no; `"(("` no.
+
+Cada vez que algo se abre y se cierra en orden inverso, piensa en una **pila**:
+
+1. Si es un carácter de apertura (`(`, `[`, `{`), **apílalo**.
+2. Si es de cierre, **desapila** y comprueba que sea su pareja. Si no lo es (o la pila está vacía), no está balanceado.
+3. Al terminar, la pila debe estar **vacía** (si no, quedó algo abierto).
+
+O(n) tiempo, O(n) espacio. Es la misma idea que usa un parser para validar HTML o JSX.
+
+<Example title="validar con una pila">
+
+```ts
+export function isBalanced(text: string): boolean {
+  const pairs: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+  const stack: string[] = [];
+  for (const char of text) {
+    if ("([{".includes(char)) stack.push(char);
+    else if (char in pairs && stack.pop() !== pairs[char]) return false;
+  }
+  return stack.length === 0;
+}
+```
+
+<Run
+  label="Ejecutar"
+  run={(log) => {
+    for (const s of ["{[()]}", "([)]", "((", "fn(a[0], { b: 1 })", ")("]) {
+      log(`${s.padEnd(20)} → ${isBalanced(s)}`);
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  I use a stack: push every opening bracket, and on a closing one pop and check it's the matching
+  pair. At the end the stack must be empty. It's O(n) time and space.
+</SayIt>
+
+## ¿Cómo funciona la búsqueda binaria?
+
+**Problema**: encontrar un valor en un array **ordenado**.
+
+Buscar uno por uno es O(n). La **búsqueda binaria** aprovecha el orden: mira el elemento del **medio**; si es el buscado, listo; si es menor, el valor solo puede estar en la mitad derecha; si es mayor, en la izquierda. En cada paso **descarta la mitad**, así que con 1 000 000 de elementos necesita unos 20 pasos: **O(log n)**.
+
+Requisito: **el array tiene que estar ordenado**. Si no lo está, ordenarlo cuesta O(n log n), y solo vale la pena si vas a buscar muchas veces.
+
+Dónde aparece en front end: buscar en listas ordenadas (fechas, timestamps de un video), en la virtualización con filas de alto variable (qué fila corresponde a un `scrollTop`), o `git bisect` para encontrar el commit que rompió algo.
+
+<Example title="búsqueda binaria iterativa">
+
+```ts
+export function binarySearch(sorted: number[], target: number): number {
+  let low = 0;
+  let high = sorted.length - 1;
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    if (sorted[mid] === target) return mid;
+    if (sorted[mid]! < target) low = mid + 1;
+    else high = mid - 1;
+  }
+  return -1;
+}
+```
+
+<Run
+  label="Buscar en 1 000 000 de números"
+  run={(log) => {
+    log("binarySearch([1, 3, 5, 7, 9], 7) →", binarySearch([1, 3, 5, 7, 9], 7));
+    log("binarySearch([1, 3, 5], 4)       →", binarySearch([1, 3, 5], 4));
+    const big = Array.from({ length: 1000000 }, (_, i) => i * 2);
+    let steps = 0;
+    let low = 0;
+    let high = big.length - 1;
+    const target = 1234566;
+    while (low <= high) {
+      steps++;
+      const mid = Math.floor((low + high) / 2);
+      if (big[mid] === target) break;
+      if (big[mid] < target) low = mid + 1;
+      else high = mid - 1;
+    }
+    log(`encontrar ${target} en 1 000 000 elementos: ${steps} pasos`);
+  }}
+/>
+
+</Example>
+
+<Pitfall>
+  Los errores típicos son de bordes: usar `low < high` en vez de `low <= high` (no revisa el último elemento), u
+  olvidar el `+ 1` / `- 1` al mover los límites (loop infinito).
+</Pitfall>
+
+<SayIt>
+  Binary search works on sorted data: I look at the middle element and discard the half that can't
+  contain the target, so it takes O(log n) steps, about twenty for a million items. The tricky parts
+  are the boundaries.
+</SayIt>
+
+## Dos punteros: ¿es un palíndromo?
+
+**Problema**: ¿un texto se lee igual al derecho y al revés, ignorando espacios, signos y mayúsculas? "Anita lava la tina" sí.
+
+La forma rápida de escribirlo es `clean === [...clean].reverse().join("")`: O(n), pero crea copias. La técnica de **dos punteros** lo hace sin memoria extra: un puntero al **inicio** y otro al **final**; compara, y si son iguales, los dos avanzan hacia el centro. Si alguna vez difieren, no es palíndromo. O(n) tiempo, O(1) espacio extra (sin contar la limpieza del texto).
+
+Dos punteros sirve en muchos problemas sobre arrays o strings **ordenados o simétricos**: invertir en el lugar, fusionar dos listas ordenadas, encontrar un par que suma un valor en un array ordenado, quitar duplicados en el lugar.
+
+<Example title="palíndromo con dos punteros">
+
+```ts
+export function isPalindrome(text: string): boolean {
+  const clean = text.toLowerCase().replace(/[^a-z0-9]/g, "");
+  let left = 0;
+  let right = clean.length - 1;
+  while (left < right) {
+    if (clean[left] !== clean[right]) return false;
+    left++;
+    right--;
+  }
+  return true;
+}
+
+// mergeSorted también usa dos punteros: uno por cada array
+mergeSorted([1, 4, 7], [2, 3, 8]); // [1, 2, 3, 4, 7, 8], O(n + m)
+```
+
+<Run
+  label="Ejecutar"
+  run={(log) => {
+    log('isPalindrome("Anita lava la tina") →', isPalindrome("Anita lava la tina"));
+    log('isPalindrome("Tempo")              →', isPalindrome("Tempo"));
+    log("mergeSorted([1, 4, 7], [2, 3, 8])  →", mergeSorted([1, 4, 7], [2, 3, 8]));
+  }}
+/>
+
+</Example>
+
+<Pitfall>
+  La limpieza con `[^a-z0-9]` elimina letras con tilde (á, ñ). Si el texto puede tenerlas, pregunta,
+  y normaliza con `text.normalize("NFD").replace(/\p{Diacritic}/gu, "")` antes de limpiar.
+</Pitfall>
+
+<SayIt>
+  I use two pointers, one at each end, and move them toward the center while the characters match.
+  It's O(n) time and constant extra space. The same technique works for merging sorted arrays or
+  reversing in place.
+</SayIt>
+
+## Fusionar intervalos
+
+**Problema**: dada una lista de intervalos `[inicio, fin]`, une los que se **solapan**. Es muy de front end: bloques de horas en un calendario o timesheet, rangos de fechas, selecciones de texto.
+
+`[[9, 11], [13, 15], [10, 12]]` → `[[9, 12], [13, 15]]`.
+
+1. **Ordena por inicio** (O(n log n)). Así, los que se solapan quedan juntos.
+2. Recorre: si el intervalo actual empieza **antes o justo cuando termina** el último del resultado, se solapan → extiende el final del último con `Math.max`. Si no, agrégalo como uno nuevo.
+
+Total: **O(n log n)** por el sort; el recorrido es O(n).
+
+<Example title="unir bloques de horas">
+
+```ts
+export function mergeIntervals(intervals: [number, number][]) {
+  const sorted = intervals.toSorted((x, y) => x[0] - y[0]);
+  const out: [number, number][] = [];
+  for (const [start, end] of sorted) {
+    const last = out.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else out.push([start, end]);
+  }
+  return out;
+}
+```
+
+<Run
+  label="Ejecutar"
+  run={(log) => {
+    log(
+      mergeIntervals([
+        [9, 11],
+        [13, 15],
+        [10, 12],
+      ]),
+    );
+    log(
+      mergeIntervals([
+        [1, 10],
+        [2, 3],
+        [4, 5],
+      ]),
+    );
+    log(
+      mergeIntervals([
+        [8, 9],
+        [9, 10],
+      ]),
+    );
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  I sort the intervals by start time, then walk them: if the current one starts before the last
+  merged one ends, I extend the end with the max; otherwise I push a new interval. Sorting
+  dominates, so it's O(n log n).
+</SayIt>
+
+## Recursión: aplanar un array anidado
+
+Una función **recursiva** se llama a sí misma con un problema **más pequeño**. Siempre tiene dos partes:
+
+1. **Caso base**: cuándo parar sin volver a llamarse (si no, "Maximum call stack size exceeded").
+2. **Caso recursivo**: reducir el problema y llamarse.
+
+Es la herramienta natural para estructuras **anidadas** de profundidad desconocida: árboles, el DOM, menús, comentarios con respuestas, JSON.
+
+**Problema**: implementar `flatten` sin `.flat(Infinity)`: `[1, [2, [3, [4]]], 5]` → `[1, 2, 3, 4, 5]`. Recorres; si el elemento es un array, lo aplanas recursivamente y agregas el resultado; si no, lo agregas tal cual. O(n) sobre el total de elementos.
+
+Cada llamada ocupa espacio en el **call stack**, así que la recursión usa O(profundidad) de memoria. Con anidamientos muy profundos (decenas de miles de niveles) se puede convertir a una versión **iterativa con una pila**.
+
+<Example title="flatten recursivo">
+
+```ts
+export function flatten<T>(list: Nested<T>): T[] {
+  const out: T[] = [];
+  for (const item of list) {
+    if (Array.isArray(item))
+      out.push(...flatten(item)); // caso recursivo
+    else out.push(item); // caso base
+  }
+  return out;
+}
+```
+
+<Run
+  label="Ejecutar"
+  run={(log) => {
+    log(flatten([1, [2, [3, [4]]], 5]));
+    log(flatten([[], [[]], ["a", ["b"]]]));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Recursion means solving a problem by calling the same function on a smaller piece, with a base
+  case to stop. It's a natural fit for nested data like trees or nested arrays. To flatten, if an
+  item is an array I flatten it recursively, otherwise I add it. It uses stack space proportional to
+  the depth.
+</SayIt>
+
+## Memoización: Fibonacci de O(2ⁿ) a O(n)
+
+**Memoizar** es guardar el resultado de una función para una entrada y devolverlo directamente la próxima vez, en lugar de recalcularlo. Funciona con **funciones puras** (misma entrada, misma salida).
+
+El ejemplo clásico es Fibonacci (`fib(n) = fib(n-1) + fib(n-2)`). La versión recursiva directa **recalcula lo mismo una y otra vez**: `fib(50)` llama a `fib(48)` desde dos lugares, cada uno llama a `fib(47)`, y así. El número de llamadas crece como **O(2ⁿ)**: `fib(50)` tardaría minutos.
+
+Con un `Map` de resultados (`memo`), cada `fib(k)` se calcula **una sola vez**: **O(n)**. Es el corazón de la **programación dinámica**.
+
+Es la misma idea que `useMemo` en React (no recalcular si las dependencias no cambiaron) y que una caché de peticiones.
+
+<Example title="con y sin memo">
+
+<Compare>
+<Bad>
+
+```ts
+// O(2ⁿ)
+function slowFib(n: number): number {
+  if (n <= 1) return n;
+  return slowFib(n - 1) + slowFib(n - 2);
+}
+```
+
+</Bad>
+<Good>
+
+```ts
+// O(n)
+function fib(n: number, memo = new Map<number, number>()): number {
+  if (n <= 1) return n;
+  if (memo.has(n)) return memo.get(n)!;
+  const result = fib(n - 1, memo) + fib(n - 2, memo);
+  memo.set(n, result);
+  return result;
+}
+```
+
+</Good>
+</Compare>
+
+<Run
+  label="Contar llamadas"
+  run={(log) => {
+    let calls = 0;
+    const slowFib = (n) => {
+      calls++;
+      return n <= 1 ? n : slowFib(n - 1) + slowFib(n - 2);
+    };
+    let t = performance.now();
+    const a = slowFib(27);
+    log(
+      `sin memo: fib(27) = ${a} · ${calls.toLocaleString("en")} llamadas · ${(performance.now() - t).toFixed(1)} ms`,
+    );
+    t = performance.now();
+    const b = fib(50);
+    log(`con memo: fib(50) = ${b.toLocaleString("en")} · ${(performance.now() - t).toFixed(2)} ms`);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Memoization caches the result of a pure function for each input so it's computed only once. Naive
+  recursive Fibonacci is O(2 to the n) because it recomputes the same values; with a memo Map it
+  becomes O(n). It's the same idea behind useMemo and request caches.
+</SayIt>

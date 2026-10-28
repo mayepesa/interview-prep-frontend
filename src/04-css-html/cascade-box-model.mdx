@@ -1,0 +1,508 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../app/study";
+import {
+  BoxSizingDemo,
+  CustomPropertiesDemo,
+  PositionDemo,
+  SpecificityDemo,
+  StackingContextDemo,
+  UnitsDemo,
+} from "./cascade-box-model.examples";
+
+export const meta = {
+  title: "Cascada, box model y posicionamiento",
+  section: "css-html",
+  order: 20,
+  summary:
+    "Cómo decide el navegador qué regla gana (cascada, especificidad, herencia, @layer), cómo se mide una caja, cómo se posiciona, por qué falla un z-index, y qué unidad usar en cada caso.",
+};
+
+## ¿Qué es la cascada?
+
+Cuando varias reglas le dan un valor distinto a la misma propiedad de un elemento, el navegador necesita elegir una. La **cascada** es el algoritmo que decide, y revisa estos criterios **en orden** (el primero que desempata gana):
+
+1. **Origen e importancia.** Los estilos vienen del navegador (_user agent_), del usuario o del autor (tú). Los del autor ganan a los del navegador. Con `!important` el orden se invierte.
+2. **Estilos inline** (`style="…"`) ganan a las reglas normales de las hojas de estilo.
+3. **Capas** (`@layer`): una capa declarada después gana a una anterior, y el CSS sin capa gana a todas las capas.
+4. **Especificidad**: el selector más específico gana.
+5. **Orden de aparición**: si todo lo anterior empata, gana la regla que aparece **última**.
+
+Cuando entiendes este orden, "¿por qué no se aplica mi CSS?" deja de ser misterioso: casi siempre hay otra regla más específica o que va después. En DevTools, pestaña _Styles_, las reglas tachadas son las que perdieron.
+
+<Example title="el orden de aparición desempata">
+
+```css
+.button {
+  background: gray;
+}
+.button {
+  background: blue;
+} /* misma especificidad, va después: gana */
+```
+
+</Example>
+
+<SayIt>
+  The cascade is how the browser picks a value when several rules target the same property. It
+  checks origin and importance first, then inline styles, then cascade layers, then specificity, and
+  finally source order: on a tie, the last rule wins.
+</SayIt>
+
+## ¿Qué es la especificidad y cómo se calcula?
+
+La **especificidad** es el "peso" de un selector. Se calcula como tres números **(A, B, C)**:
+
+| Columna | Qué cuenta                        | Ejemplos                                             |
+| ------- | --------------------------------- | ---------------------------------------------------- |
+| **A**   | ids                               | `#header`                                            |
+| **B**   | clases, atributos y pseudo-clases | `.card`, `[type="text"]`, `:hover`, `:focus-visible` |
+| **C**   | elementos y pseudo-elementos      | `p`, `li`, `::before`                                |
+| (nada)  | universal y combinadores          | `*`, `>`, `+`, `~`, espacio                          |
+
+Se comparan **columna por columna, de izquierda a derecha**: un solo id `(1,0,0)` gana a cualquier cantidad de clases `(0,15,0)`. No es un número decimal que se suma.
+
+Casos especiales:
+
+- `:is()`, `:not()` y `:has()` valen lo que el argumento **más específico** que contienen.
+- `:where()` vale **siempre 0**: útil para estilos base fáciles de sobrescribir.
+- Un estilo inline gana a cualquier selector; `!important` gana a todo lo que no sea `!important`.
+
+| Selector           | Especificidad |
+| ------------------ | ------------- |
+| `li`               | (0,0,1)       |
+| `ul li`            | (0,0,2)       |
+| `.nav li`          | (0,1,1)       |
+| `.nav .item:hover` | (0,3,0)       |
+| `#main .nav li`    | (1,1,1)       |
+| `:where(.nav) li`  | (0,0,1)       |
+
+<Example title="cinco reglas compiten por el color">
+
+```css
+.cbm-spec p {
+  color: gray;
+} /* (0,1,1) */
+.cbm-spec .note {
+  color: blue;
+} /* (0,2,0) gana a la anterior */
+#cbm-id {
+  color: green;
+} /* (1,0,0) gana a las clases */
+.cbm-spec .tie {
+  color: red;
+} /* (0,2,0) */
+.cbm-spec .tie {
+  color: green;
+} /* (0,2,0) empate: gana la última */
+```
+
+<Live hint="compara cada línea con la regla que la pinta">
+  <SpecificityDemo />
+</Live>
+
+</Example>
+
+<Tip title="En un proyecto real">
+  Mantén la especificidad **baja y plana**: una clase por selector (como hacen BEM, CSS Modules o
+  Tailwind). Si necesitas un id o `!important` para ganar, es señal de que la arquitectura de
+  estilos está peleando consigo misma.
+</Tip>
+
+<SayIt>
+  Specificity is counted in three columns: ids, then classes, attributes and pseudo-classes, then
+  elements. They're compared left to right, so one id beats any number of classes. I keep
+  specificity flat, usually one class per selector, so styles are predictable and easy to override.
+</SayIt>
+
+## ¿Qué es la herencia en CSS?
+
+Algunas propiedades se **heredan**: si no le das un valor a un elemento, toma el de su padre. Son, sobre todo, las de **texto**: `color`, `font-family`, `font-size`, `line-height`, `text-align`, `visibility`, `cursor`. Las de **caja** no se heredan: `margin`, `padding`, `border`, `background`, `width`, `display`.
+
+Por eso pones `font-family` en `body` y toda la página la usa, pero un `border` en el `body` no aparece en cada párrafo.
+
+Palabras clave para controlar la herencia en cualquier propiedad:
+
+- `inherit`: toma el valor del padre.
+- `initial`: el valor inicial de la especificación (no el del navegador).
+- `unset`: `inherit` si la propiedad se hereda, `initial` si no.
+- `revert`: vuelve al estilo del navegador.
+
+<Example title="herencia útil en un reset">
+
+```css
+body {
+  font-family: system-ui;
+  color: #1b1e27;
+}
+
+/* los controles de formulario NO heredan la fuente por defecto */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+```
+
+</Example>
+
+<SayIt>
+  Text-related properties like color and font are inherited from the parent, while box properties
+  like margin, padding and border are not. A classic reset sets font: inherit on form controls,
+  because browsers don't inherit fonts there by default.
+</SayIt>
+
+## ¿Cuándo usar `!important`?
+
+`!important` pone una declaración por encima de todas las normales, sin importar la especificidad. El problema es que la única forma de ganarle es **otro** `!important` más específico, y así empieza una escalada difícil de mantener.
+
+Usos razonables:
+
+- **Clases de utilidad** que deben ganar siempre (`.visually-hidden`, `.hidden`).
+- **Sobrescribir CSS de terceros** que no controlas (con estilos inline de una librería, por ejemplo).
+- Preferencias de accesibilidad, como desactivar animaciones con `prefers-reduced-motion`.
+
+En lugar de `!important` para ganar una pelea de especificidad, baja la especificidad de la regla original o usa `@layer`.
+
+<Compare>
+<Bad>
+
+```css
+.card .title {
+  color: navy;
+}
+.title {
+  color: teal !important;
+} /* gana, pero ahora todo necesita !important */
+```
+
+</Bad>
+<Good>
+
+```css
+@layer base, components;
+@layer base {
+  .card .title {
+    color: navy;
+  }
+}
+@layer components {
+  .title {
+    color: teal;
+  }
+} /* la capa posterior gana */
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  I avoid !important because the only way to beat it is another !important. I use it for utility
+  classes or to override third-party styles, and otherwise fix the specificity or use cascade
+  layers.
+</SayIt>
+
+## ¿Qué es el box model y qué hace `box-sizing: border-box`?
+
+Cada elemento es una **caja** con cuatro capas, de adentro hacia afuera:
+
+1. **content**: el contenido (texto, imágenes).
+2. **padding**: espacio interno, toma el color de fondo.
+3. **border**: el borde.
+4. **margin**: espacio externo, transparente, separa de otras cajas.
+
+La pregunta clave es **qué mide `width`**:
+
+- `box-sizing: content-box` (el valor por defecto): `width` es solo el contenido. El ancho real es `width + padding + border`. Un `width: 200px` con `padding: 16px` y `border: 4px` ocupa **240px**.
+- `box-sizing: border-box`: `width` incluye padding y borde. Ocupa exactamente **200px** y el contenido se achica.
+
+Por eso casi todos los proyectos empiezan con `*, *::before, *::after { box-sizing: border-box; }`: es mucho más fácil razonar sobre layouts.
+
+<Pitfall title="Margin collapse">
+  Los márgenes **verticales** de bloques vecinos no se suman: se queda el mayor (un `margin-bottom:
+  20px` seguido de un `margin-top: 30px` dan 30px de separación). También colapsa el margen de un
+  primer hijo con el de su padre. No pasa en flex ni grid, que es otra razón para usar `gap`.
+</Pitfall>
+
+<Example title="mide la misma caja con los dos modelos">
+
+```css
+.box {
+  width: 200px;
+  padding: 16px;
+  border: 4px solid;
+  box-sizing: content-box; /* ancho real: 200 + 32 + 8 = 240px */
+}
+```
+
+<Live hint="cambia a border-box y mueve el padding">
+  <BoxSizingDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  Every element is a box with content, padding, border and margin. By default width only measures
+  the content, so padding and border are added on top. With box-sizing border-box, width includes
+  padding and border, which is why most resets apply it globally.
+</SayIt>
+
+## ¿Qué tipos de display existen?
+
+`display` decide cómo se comporta una caja **hacia afuera** (con sus vecinos) y **hacia adentro** (cómo ordena a sus hijos).
+
+| Valor                  | Comportamiento                                                                                                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `block`                | Empieza en una línea nueva y ocupa todo el ancho disponible. Acepta `width`, `height`, márgenes en todos los lados. (`div`, `p`, `section`) |
+| `inline`               | Fluye dentro del texto. **Ignora** `width` y `height`, y los márgenes verticales. (`span`, `a`, `strong`)                                   |
+| `inline-block`         | Fluye como texto pero acepta `width`, `height` y márgenes.                                                                                  |
+| `flex` / `inline-flex` | Sus hijos se ordenan en una dimensión.                                                                                                      |
+| `grid` / `inline-grid` | Sus hijos se ordenan en dos dimensiones.                                                                                                    |
+| `none`                 | El elemento no se renderiza, no ocupa espacio y sale del árbol de accesibilidad.                                                            |
+| `contents`             | La caja desaparece y sus hijos actúan como hijos del abuelo.                                                                                |
+
+Ocultar no es todo igual: `display: none` quita el espacio y lo oculta del lector de pantalla; `visibility: hidden` lo oculta pero **conserva el espacio**; `opacity: 0` lo deja invisible pero sigue recibiendo clics y foco. Para ocultar algo solo visualmente y que el lector lo lea, se usa una clase `.visually-hidden`.
+
+<Example title="ocultar de distintas formas">
+
+```css
+.gone {
+  display: none;
+} /* sin espacio, sin lector */
+.invisible {
+  visibility: hidden;
+} /* conserva el espacio */
+.visually-hidden {
+  /* invisible, pero el lector lo lee */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+```
+
+</Example>
+
+<SayIt>
+  Block elements start on a new line and take the full width, inline elements flow with text and
+  ignore width and height, and inline-block flows like text but accepts dimensions. display: none
+  removes the element from layout and from the accessibility tree, while visibility: hidden keeps
+  its space.
+</SayIt>
+
+## ¿Qué diferencias hay entre position relative, absolute, fixed y sticky?
+
+`position` decide si la caja sigue el **flujo normal** del documento y respecto a qué se miden `top`, `right`, `bottom`, `left`.
+
+| Valor              | ¿Sigue en el flujo?                | Se ubica respecto a…                                                                                               |
+| ------------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `static` (defecto) | Sí                                 | No acepta `top`/`left`                                                                                             |
+| `relative`         | Sí (su hueco se mantiene)          | Su propia posición normal                                                                                          |
+| `absolute`         | **No** (los demás ocupan su lugar) | El ancestro **posicionado** más cercano (cualquier `position` distinto de `static`); si no hay, el documento       |
+| `fixed`            | **No**                             | El viewport: no se mueve al hacer scroll                                                                           |
+| `sticky`           | Sí                                 | Se comporta como `relative` hasta cruzar el umbral (`top: 0`), luego se "pega" mientras su contenedor esté visible |
+
+El patrón más común: el padre con `position: relative` y el hijo con `position: absolute` para colocar un badge en la esquina de una tarjeta.
+
+<Example title="mismo top y left, distinto position">
+
+```css
+.parent {
+  position: relative;
+}
+.me {
+  position: absolute; /* prueba static, relative, absolute, sticky */
+  top: 10px;
+  left: 40px;
+}
+```
+
+<Live hint="cambia el valor y haz scroll dentro del recuadro (prueba sticky)">
+  <PositionDemo />
+</Live>
+
+</Example>
+
+<Pitfall>
+  `sticky` "no funciona" casi siempre por dos razones: falta `top` (o `bottom`), o algún ancestro
+  tiene `overflow: hidden` o `auto`, que se convierte en el contenedor de scroll. Y `fixed` deja de
+  ser relativo al viewport si un ancestro tiene `transform`, `filter` o `perspective`.
+</Pitfall>
+
+<SayIt>
+  Relative moves an element from its normal spot and keeps its space. Absolute takes it out of the
+  flow and positions it against the nearest positioned ancestor. Fixed is relative to the viewport,
+  and sticky behaves like relative until you scroll past a threshold, then it sticks inside its
+  container.
+</SayIt>
+
+## ¿Qué es un stacking context y por qué falla un z-index?
+
+`z-index` decide qué elemento se pinta encima cuando se superponen. Pero solo funciona en elementos posicionados (o hijos de flex/grid) y, sobre todo, **solo compara elementos dentro del mismo stacking context**.
+
+Un **stacking context** es un grupo que se apila como una sola capa. Todo lo de adentro se ordena entre sí, y después el grupo entero se apila contra sus vecinos. Crean un stacking context, entre otros:
+
+- `position` distinto de `static` **con** `z-index` distinto de `auto` (y `fixed`/`sticky` siempre),
+- `opacity` menor que 1,
+- `transform`, `filter`, `perspective`,
+- `isolation: isolate`,
+- hijos de flex o grid con `z-index`.
+
+Por eso un modal con `z-index: 9999` puede quedar **debajo** de un header con `z-index: 2`: si el padre del modal crea un stacking context con nivel 0, el 9999 solo vale dentro de ese padre.
+
+<Example title="el 9999 que pierde contra un 2">
+
+```css
+.parent {
+  transform: translateZ(0);
+} /* crea un stacking context */
+.modal {
+  position: absolute;
+  z-index: 9999;
+} /* solo compite dentro de .parent */
+.header {
+  position: absolute;
+  z-index: 2;
+} /* está afuera: gana a todo .parent */
+```
+
+<Live hint="desmarca el transform y el modal vuelve a quedar arriba">
+  <StackingContextDemo />
+</Live>
+
+</Example>
+
+<Tip title="En React">
+  La solución típica para modales, tooltips y menús es renderizarlos en un **portal**
+  (`createPortal(children, document.body)`), así no quedan atrapados en el stacking context ni en el
+  `overflow: hidden` de un ancestro (ver [Portals](#03-react/03-expert/portals-strict-mode)). Y usa
+  una escala fija de z-index (por ejemplo tokens 10, 20, 30) en vez de números al azar.
+</Tip>
+
+<SayIt>
+  z-index only competes within the same stacking context. Things like transform, opacity below one,
+  or a positioned element with a z-index create a new context, so a child with z-index 9999 can
+  still end up below a sibling of its parent. For modals I render into a portal to avoid that.
+</SayIt>
+
+## ¿Qué son las CSS custom properties (variables)?
+
+Las **custom properties** son propiedades que defines tú, con nombre que empieza por `--`, y que lees con `var()`:
+
+```css
+:root {
+  --accent: #3558d8;
+}
+.button {
+  background: var(--accent, blue);
+} /* el segundo valor es el fallback */
+```
+
+En qué se diferencian de las variables de Sass (`$accent`):
+
+- **Viven en el navegador**, no se compilan: puedes cambiarlas en tiempo de ejecución con JavaScript o con una media query.
+- **Se heredan y respetan la cascada**: redefinirlas en un contenedor cambia solo esa parte del árbol.
+- Son la base de los **design tokens** y de los temas (claro/oscuro): cambias unas pocas variables y toda la interfaz se adapta.
+
+<Example title="un token controla todos los componentes">
+
+```css
+.button {
+  background: hsl(var(--brand-hue) 70% 50%);
+}
+.outline {
+  border-color: hsl(var(--brand-hue) 70% 50%);
+}
+
+[data-theme="dark"] {
+  --brand-hue: 230;
+} /* tema: solo se cambian variables */
+```
+
+```tsx
+<div style={{ "--brand-hue": hue } as React.CSSProperties}>…</div>
+```
+
+<Live hint="mueve el slider: una sola variable cambia los dos botones">
+  <CustomPropertiesDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  Custom properties are variables that live in the browser, so they cascade, inherit and can change
+  at runtime, unlike Sass variables, which are compiled away. I use them for design tokens and
+  theming: switching to dark mode is just redefining a few variables.
+</SayIt>
+
+## ¿Qué son las cascade layers (`@layer`)?
+
+`@layer` agrupa reglas en **capas con un orden explícito**. Al comparar dos reglas de capas distintas, gana la de la capa declarada **después**, **sin mirar la especificidad**. El CSS que no está en ninguna capa gana a todas las capas.
+
+Esto resuelve un problema viejo: el CSS de un reset o de una librería con selectores muy específicos que tus componentes no pueden sobrescribir sin `!important`.
+
+<Example title="orden de capas explícito">
+
+```css
+@layer reset, vendor, components, utilities; /* de menor a mayor prioridad */
+
+@layer vendor {
+  #datepicker .day.selected {
+    background: gray;
+  } /* (1,2,0) pero en una capa baja */
+}
+
+@layer components {
+  .day-selected {
+    background: var(--accent);
+  } /* (0,1,0) y gana igual */
+}
+```
+
+</Example>
+
+<SayIt>
+  Cascade layers let me declare the priority of groups of styles up front, like reset, vendor,
+  components and utilities. A later layer wins regardless of specificity, which makes third-party
+  CSS easy to override without !important.
+</SayIt>
+
+## ¿Qué unidad uso en cada caso?
+
+| Unidad                | Relativa a…                                                      | Uso típico                                                                      |
+| --------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `px`                  | Nada (absoluta)                                                  | Bordes, sombras, detalles finos                                                 |
+| `rem`                 | El `font-size` del root (`html`), normalmente 16px               | Tipografía y espaciado: respeta la configuración de tamaño de letra del usuario |
+| `em`                  | El `font-size` del propio elemento (o del padre, en `font-size`) | Padding de un botón que debe crecer con su texto                                |
+| `%`                   | El tamaño del contenedor                                         | Anchos fluidos                                                                  |
+| `vw` / `vh`           | 1% del ancho / alto del viewport                                 | Secciones a pantalla completa                                                   |
+| `dvh` / `svh` / `lvh` | Alto del viewport dinámico / pequeño / grande                    | En móvil, `100vh` no considera la barra del navegador; `100dvh` sí              |
+| `ch`                  | El ancho del carácter "0"                                        | Ancho de lectura cómodo: `max-width: 65ch`                                      |
+| `fr`                  | Una fracción del espacio libre en un grid                        | Columnas de grid                                                                |
+
+La trampa de `em`: se **multiplica** en cada nivel de anidamiento, porque cada hijo calcula sobre el tamaño de su padre. `rem` siempre mira al root, por eso es más predecible.
+
+<Example title="em se acumula, rem no">
+
+```css
+.nested-em {
+  font-size: 1.2em;
+} /* 1.2 × 1.2 × 1.2 × … crece en cada nivel */
+.nested-rem {
+  font-size: 1.2rem;
+} /* siempre 1.2 × 16px = 19.2px */
+```
+
+<Live hint="mira el cuarto nivel de cada columna">
+  <UnitsDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  I use rem for font sizes and spacing because it scales with the user's font settings, em when
+  something should scale with its own text, fr and percentages for layouts, ch to limit line length,
+  and dvh for full-height mobile layouts. Pixels are fine for borders.
+</SayIt>

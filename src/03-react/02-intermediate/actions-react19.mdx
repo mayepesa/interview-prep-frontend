@@ -1,0 +1,254 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  ActionVsFormAction,
+  HoursForm,
+  OptimisticComments,
+  TransitionAction,
+} from "./actions-react19.examples";
+
+export const meta = {
+  title: "Actions (React 19)",
+  section: "react-intermediate",
+  order: 80,
+  summary:
+    "Qué es una Action y cómo React 19 simplifica los formularios con useActionState, useFormStatus y useOptimistic. También Server Actions y la diferencia entre action y formAction.",
+};
+
+## ¿Qué es una Action?
+
+Antes de React 19, enviar un formulario implicaba mucho código repetido: `e.preventDefault()`, un estado `isLoading`, otro `error`, `try/finally` para apagar el loading, y resetear los campos al final.
+
+En React 19, una **Action** es una **función (normalmente async) que se ejecuta dentro de una transición**. React se encarga de:
+
+- el **estado pendiente**: sabe que la Action está corriendo y te da `isPending`,
+- las **actualizaciones optimistas** (`useOptimistic`),
+- los **errores**: si la Action lanza, el error llega al Error Boundary,
+- en formularios, **resetear** los campos no controlados cuando la Action termina bien.
+
+Hay dos formas de crear una Action:
+
+1. Pasar una función async a `startTransition` (de `useTransition`).
+2. Pasar una función a la prop **`action`** de un `<form>` (o `formAction` de un botón). React la llama con el `FormData` y la envuelve en una transición automáticamente.
+
+<Example title="una Action con useTransition">
+
+```tsx
+const [isPending, startTransition] = useTransition();
+
+const save = () => {
+  startTransition(async () => {
+    await api.saveProject(name);
+    startTransition(() => setSaved(name)); // tras un await, se vuelve a envolver
+  });
+};
+
+<button onClick={save} disabled={isPending}>
+  {isPending ? "Guardando…" : "Guardar"}
+</button>;
+```
+
+<Live hint="guarda y mira el botón">
+  <TransitionAction />
+</Live>
+
+</Example>
+
+<Pitfall title="setState después de un await">
+  Lo que actualizas **después de un `await`** dentro de `startTransition` ya no se considera parte
+  de la transición (es una limitación actual de JavaScript, que no tiene contexto async). Por eso la
+  doc de React recomienda envolver esas actualizaciones en otro `startTransition`.
+</Pitfall>
+
+<SayIt>
+  In React 19 an Action is an async function that runs inside a transition. React tracks the pending
+  state, handles optimistic updates and errors for me, and when it's a form action it also resets
+  the form when it succeeds.
+</SayIt>
+
+## ¿Para qué sirve useActionState?
+
+`useActionState(action, initialState)` envuelve una Action y **guarda lo que devuelve** como estado. Es ideal para formularios que necesitan mostrar un resultado (un mensaje de éxito, errores de validación del servidor).
+
+```tsx
+const [state, formAction, isPending] = useActionState(saveHours, null);
+```
+
+- `saveHours(previousState, formData)`: tu función. Recibe el estado anterior y el `FormData`, y **devuelve el estado nuevo**.
+- `state`: lo que devolvió la última ejecución (o `initialState` al principio).
+- `formAction`: lo pasas a `<form action={formAction}>`.
+- `isPending`: `true` mientras corre.
+
+Si envías el formulario varias veces seguidas, las llamadas se **encolan** en orden: cada una recibe el estado que dejó la anterior.
+
+## ¿Cómo funciona useFormStatus?
+
+`useFormStatus()` (de `react-dom`) devuelve `{ pending, data, method, action }` del **`<form>` padre** más cercano. Así un botón de enviar reutilizable sabe si su formulario se está enviando sin que le pases props.
+
+Condición importante: el componente que lo llama tiene que estar **dentro** del `<form>`, no ser el que lo renderiza.
+
+<Example title="useActionState + useFormStatus">
+
+```tsx
+async function saveHours(prev: SaveState, formData: FormData): Promise<SaveState> {
+  const hours = Number(formData.get("hours"));
+  if (hours <= 0 || hours > 24) return { ok: false, message: "Las horas deben estar entre 1 y 24" };
+  await api.save(hours);
+  return { ok: true, message: `Guardadas ${hours} h` };
+}
+
+function SubmitButton() {
+  const { pending } = useFormStatus(); // lee el <form> padre
+  return <button disabled={pending}>{pending ? "Guardando…" : "Guardar"}</button>;
+}
+
+function HoursForm() {
+  const [state, formAction] = useActionState(saveHours, null);
+  return (
+    <form action={formAction}>
+      <input name="hours" type="number" defaultValue={8} />
+      <SubmitButton />
+      {state && <p>{state.message}</p>}
+    </form>
+  );
+}
+```
+
+<Live hint="guarda 8; luego prueba con 30">
+  <HoursForm />
+</Live>
+
+</Example>
+
+<SayIt>
+  useActionState wraps an action and keeps whatever it returns as state, plus a pending flag, so
+  validation messages from the server are easy to show. useFormStatus lets any component inside a
+  form read whether that form is submitting, which is perfect for a reusable submit button.
+</SayIt>
+
+## ¿Qué problema resuelve useOptimistic?
+
+Una **actualización optimista** muestra el resultado **antes** de que el servidor confirme, asumiendo que va a salir bien. La app se siente instantánea: el like, el comentario o la tarea marcada aparecen al hacer clic.
+
+El problema es revertir si falla. `useOptimistic` lo resuelve:
+
+```tsx
+const [optimistic, addOptimistic] = useOptimistic(comments, (current, text) => [
+  ...current,
+  { text, sending: true },
+]);
+```
+
+- `optimistic` es igual a `comments`… salvo **mientras una Action está en curso**, en que incluye los cambios optimistas.
+- `addOptimistic(x)` aplica tu función de actualización.
+- Cuando la Action **termina**, el valor optimista se descarta y vuelve a mostrarse el estado real. Si salió bien, ya actualizaste `comments` y el comentario queda. Si falló, no lo agregaste y **desaparece solo**: no hay que escribir el rollback.
+
+<Example title="comentarios optimistas">
+
+```tsx
+const submit = async (formData: FormData) => {
+  const text = String(formData.get("text"));
+  addOptimistic(text); // aparece al instante
+  try {
+    const saved = await postComment(text);
+    setComments((prev) => [...prev, saved]); // estado real
+  } catch (e) {
+    setError((e as Error).message); // el optimista se va solo
+  }
+};
+
+<form action={submit}>…</form>;
+```
+
+<Live hint="comenta algo; luego escribe un texto con la palabra error">
+  <OptimisticComments />
+</Live>
+
+</Example>
+
+<Pitfall>
+  `addOptimistic` solo funciona **dentro de una Action** (una `action` de formulario o un
+  `startTransition`). Fuera de una, React avisa y el valor optimista no dura.
+</Pitfall>
+
+<SayIt>
+  useOptimistic shows the expected result immediately while an action runs. When the action
+  finishes, React drops the optimistic value and shows the real state, so if the request failed the
+  change disappears without me writing rollback code.
+</SayIt>
+
+## ¿Qué son las Server Actions?
+
+Una **Server Action** (o _Server Function_) es una función async marcada con la directiva **`"use server"`** que **se ejecuta en el servidor**, pero que puedes llamar desde el cliente como si fuera local. Las usan frameworks con React Server Components, como **Next.js App Router**.
+
+Cómo funciona por dentro: el bundler reemplaza la función, en el código del cliente, por una referencia. Cuando la llamas, el framework hace un `POST` al servidor con los argumentos serializados, ejecuta la función allí y devuelve el resultado.
+
+```tsx
+// app/actions.ts
+"use server";
+
+export async function createProject(formData: FormData) {
+  const session = await auth(); // ✓ acceso a cookies, DB, secretos
+  if (!session) throw new Error("No autorizado");
+  const name = z.string().min(1).parse(formData.get("name")); // ✓ validar SIEMPRE
+  await db.project.create({ data: { name, ownerId: session.userId } });
+  revalidatePath("/projects"); // refrescar datos en Next.js
+}
+
+// app/projects/new/page.tsx (Server Component)
+import { createProject } from "../actions";
+
+export default function NewProject() {
+  return (
+    <form action={createProject}>
+      <input name="name" />
+      <button>Crear</button>
+    </form>
+  );
+}
+```
+
+Ventaja extra: con un Server Component, el formulario funciona **antes de que cargue el JavaScript** (_progressive enhancement_), porque es un `<form>` HTML que envía un POST.
+
+<Pitfall title="Una Server Action es un endpoint público">
+  Cualquiera puede llamarla con un `fetch` si conoce la referencia. Trátala como un endpoint de API:
+  **valida los datos**, **comprueba autenticación y permisos** dentro de la función, y no confíes en
+  lo que llega del cliente.
+</Pitfall>
+
+<SayIt>
+  A Server Action is an async function marked with "use server" that runs on the server but can be
+  passed to a form's action or called from the client. The framework turns the call into a POST
+  request. I treat it like a public endpoint, so I validate input and check permissions inside it.
+</SayIt>
+
+## ¿Cuál es la diferencia entre action y formAction?
+
+- **`action`** va en el `<form>`: es la Action por defecto del formulario.
+- **`formAction`** va en un `<button type="submit">` (o `<input type="submit">`): **sobrescribe** la Action del formulario solo cuando se envía con **ese** botón.
+
+Sirve para un formulario con varias salidas: "Publicar" y "Guardar borrador", "Aprobar" y "Rechazar". Ambos reciben el mismo `FormData`. Son atributos de HTML (`action` y `formaction`); React 19 les permite recibir funciones además de URLs.
+
+<Example title="dos botones, dos acciones">
+
+```tsx
+<form action={publish}>
+  <input name="title" />
+  <button type="submit">Publicar</button> {/* llama a publish */}
+  <button type="submit" formAction={saveDraft}>
+    Guardar borrador
+  </button>{" "}
+  {/* llama a saveDraft */}
+</form>
+```
+
+<Live hint="prueba los dos botones">
+  <ActionVsFormAction />
+</Live>
+
+</Example>
+
+<SayIt>
+  action is set on the form and is the default action. formAction is set on a specific submit button
+  and overrides the form's action when that button submits, which is handy for publish versus save
+  draft.
+</SayIt>

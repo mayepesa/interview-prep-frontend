@@ -1,5 +1,8 @@
 import type { Entry, Project } from "./types";
 
+// ¿Empezaste este ejercicio? Cambia `false` por `true` y sus tests empezarán a correr.
+export const started = false;
+
 export function hoursByProject(entries: Entry[]): Record<string, number> {
   throw new Error("TODO");
 }

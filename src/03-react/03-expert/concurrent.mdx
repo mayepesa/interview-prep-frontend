@@ -1,0 +1,196 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { Blocking, TabsWithTransition, WithDeferred, WithTransition } from "./concurrent.examples";
+
+export const meta = {
+  title: "Concurrent React",
+  section: "react-expert",
+  order: 10,
+  summary:
+    "Qué significa que React sea concurrente, cómo marcar actualizaciones como no urgentes con useTransition y startTransition, qué hace useDeferredValue y cómo se combinan con la memoización.",
+};
+
+## ¿Qué es Concurrent React y qué problema resuelve?
+
+Antes de React 18, renderizar era **síncrono e ininterrumpible**: una vez que React empezaba a renderizar una actualización, no paraba hasta terminar. Si renderizar una lista grande tardaba 300 ms, durante esos 300 ms el navegador no podía responder a nada: el input se "trababa", los clics no respondían.
+
+**Concurrent React** (el renderizado concurrente, activo con `createRoot`) cambia eso:
+
+- React puede **empezar un render, pausarlo, atender algo más urgente y retomarlo** (o descartarlo si ya no sirve).
+- Puede **preparar una versión nueva de la UI en segundo plano** mientras sigue mostrando la actual.
+- Las actualizaciones tienen **prioridades**: lo **urgente** (escribir, hacer clic, presionar una tecla) va primero; lo **no urgente** (filtrar una lista, cambiar de pestaña, navegar) puede esperar.
+
+Lo hace posible **React Fiber**, la arquitectura interna que divide el render en pequeñas unidades de trabajo. Entre unidad y unidad, React le devuelve el control al navegador (aproximadamente cada 5 ms) para ver si llegó algo más urgente.
+
+Concurrente **no** significa paralelo ni multi-hilo: todo sigue en el hilo principal. Significa que React puede **intercalar** trabajos.
+
+Tú no "activas" la concurrencia componente por componente: usas APIs que la aprovechan (`useTransition`, `useDeferredValue`, `Suspense`).
+
+<SayIt>
+  Concurrent React means rendering is interruptible. React can pause a non-urgent render to handle
+  user input first, and prepare new UI in the background while the current one stays on screen. I
+  opt in with transitions, deferred values and Suspense.
+</SayIt>
+
+## ¿Para qué sirve useTransition y cuándo usarlo?
+
+`const [isPending, startTransition] = useTransition()`
+
+- **`startTransition(fn)`**: las actualizaciones de estado dentro de `fn` se marcan como **transición** (no urgentes). Si llega algo urgente (otra tecla), React **interrumpe** el render de la transición, atiende lo urgente y vuelve a empezar con el valor más nuevo.
+- **`isPending`**: `true` mientras la transición todavía no se mostró. Sirve para atenuar la UI vieja o mostrar un spinner pequeño.
+
+El patrón típico: **dividir el estado en dos**. El valor del input es urgente (tiene que verse al instante); el filtro que usa la lista pesada es una transición.
+
+<Example title="filtrar una lista lenta con y sin transición">
+
+```tsx
+const [text, setText] = useState("");     // urgente
+const [filter, setFilter] = useState(""); // no urgente
+const [isPending, startTransition] = useTransition();
+
+<input
+  value={text}
+  onChange={(e) => {
+    setText(e.target.value);                           // se ve ya
+    startTransition(() => setFilter(e.target.value));  // puede esperar
+  }}
+/>
+<div style={{ opacity: isPending ? 0.6 : 1 }}>
+  <SlowList filter={filter} />
+</div>
+```
+
+<Live hint="sin transición: escribe rápido 'planificacion' y nota cómo se traba">
+  <Blocking />
+</Live>
+
+<Live hint="con transición: el input responde y la lista se pone al día después">
+  <WithTransition />
+</Live>
+
+</Example>
+
+Cuándo usarlo:
+
+- Filtrar, ordenar o buscar en listas que tardan en renderizar.
+- **Cambiar de pestaña o de ruta**: si la vista nueva tarda (o suspende), React mantiene la vista actual visible e interactiva en vez de mostrar un fallback.
+- **Actions** de React 19: `startTransition(async () => …)` (ver la página de Actions).
+
+<Example title="pestañas: puedes cambiar de idea antes de que termine">
+
+```tsx
+const select = (next: Tab) => startTransition(() => setTab(next));
+```
+
+<Live hint="sin transición: clic en 'Entradas' y enseguida en 'Ajustes'">
+  <TabsWithTransition useTransitionForTabs={false} />
+</Live>
+
+<Live hint="con transición: el segundo clic interrumpe el primero">
+  <TabsWithTransition useTransitionForTabs />
+</Live>
+
+</Example>
+
+<Pitfall title="Un input controlado no puede ir en una transición">
+  `startTransition(() => setText(e.target.value))` para el **valor del input** hace que lo escrito aparezca con
+  retraso o se pierda. El valor que muestra el input siempre es urgente; solo lo que deriva de él va en la
+  transición.
+</Pitfall>
+
+<SayIt>
+  useTransition lets me mark a state update as non-urgent. Typing stays responsive because React can
+  interrupt the transition's render, and isPending tells me the new UI isn't ready yet. I use it for
+  slow filters and for switching tabs or routes.
+</SayIt>
+
+## ¿Qué es startTransition y en qué se diferencia de actualizar el estado normal?
+
+Hay dos formas de usarlo:
+
+|                | `useTransition()`     | `startTransition` (import de `react`)                                |
+| -------------- | --------------------- | -------------------------------------------------------------------- |
+| Dónde          | Dentro de componentes | En cualquier lugar: fuera de componentes, en librerías, en un router |
+| Da `isPending` | Sí                    | No                                                                   |
+
+Diferencias con un `setState` normal:
+
+|                           | `setState` normal               | Dentro de `startTransition`                                |
+| ------------------------- | ------------------------------- | ---------------------------------------------------------- |
+| Prioridad                 | Urgente                         | Baja                                                       |
+| ¿Se puede interrumpir?    | No                              | Sí, por cualquier actualización urgente                    |
+| Si suspende (lazy, `use`) | Muestra el fallback de Suspense | **Mantiene la UI anterior** y espera                       |
+| Varias seguidas           | Se renderizan todas             | Las intermedias se pueden descartar; solo cuenta la última |
+
+<SayIt>
+  A regular state update is urgent and renders synchronously to completion. Inside startTransition
+  the update has lower priority: it can be interrupted, intermediate values can be skipped, and if
+  something suspends React keeps showing the previous UI instead of a fallback.
+</SayIt>
+
+## ¿Para qué sirve useDeferredValue?
+
+`const deferred = useDeferredValue(value)` devuelve una copia del valor que **va un paso atrás**:
+
+1. Cuando `value` cambia, React primero renderiza con el valor **viejo** de `deferred` (rápido, porque la parte lenta está memoizada y no cambió).
+2. Después, en segundo plano y de forma interrumpible, renderiza con el valor **nuevo**.
+
+Es lo mismo que `useTransition`, pero para cuando **no controlas el setter**: el valor llega por props, de un hook de terceros o de un store.
+
+`value !== deferred` te dice que el contenido está desactualizado (el equivalente a `isPending`).
+
+<Example title="useDeferredValue con el mismo input">
+
+```tsx
+const [text, setText] = useState("");
+const deferred = useDeferredValue(text);
+const stale = text !== deferred;
+
+<input value={text} onChange={(e) => setText(e.target.value)} />
+<div style={{ opacity: stale ? 0.6 : 1 }}>
+  <SlowList filter={deferred} />  {/* SlowList usa memo */}
+</div>
+```
+
+<Live hint="escribe rápido">
+  <WithDeferred />
+</Live>
+
+</Example>
+
+<Tip title="Con Suspense">
+  Si la parte que usa el valor diferido **suspende** (por ejemplo, resultados de búsqueda leídos con
+  `use`), `useDeferredValue` mantiene los resultados anteriores en pantalla en vez de mostrar el
+  fallback en cada tecla.
+</Tip>
+
+<SayIt>
+  useDeferredValue gives me a lagging copy of a value. React renders the urgent update first with
+  the old value, then re-renders with the new one in the background. I use it when I receive the
+  value as a prop and can't wrap the setter in a transition.
+</SayIt>
+
+## ¿Cómo se complementan con useMemo y useCallback?
+
+Resuelven problemas **distintos**:
+
+| Herramienta                          | Qué hace con un render caro                              |
+| ------------------------------------ | -------------------------------------------------------- |
+| `memo` / `useMemo` / `useCallback`   | **Lo evitan** cuando los datos no cambiaron              |
+| `useTransition` / `useDeferredValue` | **Lo hacen interrumpible** cuando los datos sí cambiaron |
+| Debounce                             | **Lo retrasan** hasta que el usuario deja de escribir    |
+| Virtualización                       | **Lo achican**: solo renderiza las filas visibles        |
+
+Y se **necesitan mutuamente**: en los ejemplos, `SlowList` está envuelta en **`memo`**. Sin `memo`, el render urgente (el de cada tecla) también re-renderizaría la lista lenta, porque es hija del componente que cambió. `memo` hace que en el render urgente la lista se salte (su prop `filter` no cambió todavía) y solo se renderice en el render de baja prioridad.
+
+<Pitfall title="Transiciones no reemplazan al debounce">
+  Si cada tecla dispara una **petición al servidor**, una transición no ahorra peticiones: solo
+  prioriza renders. Para red, usa debounce (y cancelación). Para renders caros en el cliente,
+  transiciones.
+</Pitfall>
+
+<SayIt>
+  Memoization avoids work when inputs didn't change; transitions and deferred values make
+  unavoidable work interruptible. They work together: the slow child must be memoized so the urgent
+  render can skip it. And for network requests I still debounce, because transitions don't reduce
+  requests.
+</SayIt>

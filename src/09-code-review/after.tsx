@@ -1,4 +1,4 @@
-// La versión después del review. Compárala con before.tsx y con los comentarios del README.
+// La versión después del review. Compárala con before.tsx y con los comentarios de la página.
 
 import { useEffect, useState } from "react";
 

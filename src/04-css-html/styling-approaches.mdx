@@ -1,0 +1,340 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../app/study";
+import {
+  AnimationDemo,
+  CssModuleCard,
+  InlineProgress,
+  StyledButtons,
+} from "./styling-approaches.examples";
+
+export const meta = {
+  title: "Formas de dar estilos en React",
+  section: "css-html",
+  order: 40,
+  summary:
+    "className, estilos inline y clases condicionales; CSS Modules, styled-components y Tailwind con sus ventajas y costos; design tokens; y cómo animar sin perder rendimiento.",
+};
+
+## ¿Cómo se aplican clases CSS en React y por qué `className`?
+
+En JSX se usa `className` en lugar de `class` porque JSX se compila a JavaScript, y `class` es una palabra reservada del lenguaje (sirve para declarar clases). Por la misma razón, el `for` de un label se escribe `htmlFor`. El valor de `className` es un **string** con las clases separadas por espacios.
+
+Para **clases condicionales** hay tres formas habituales:
+
+- Un ternario o un template string: ``className={`card ${active ? "card--active" : ""}`}``.
+- Un `filter(Boolean).join(" ")` sobre un array.
+- La librería **`clsx`** (o `classnames`), que es el estándar de facto: `clsx("card", active && "card--active", { disabled })`.
+
+<Example title="clase condicional con un mini clsx">
+
+```tsx
+function cx(...classes: (string | false | null | undefined)[]) {
+  return classes.filter(Boolean).join(" ");
+}
+
+<div className={cx(styles.card, active && styles.active)}>…</div>;
+```
+
+<Live hint="activa la tarjeta y mira el className que se genera">
+  <CssModuleCard />
+</Live>
+
+</Example>
+
+<SayIt>
+  JSX uses className because class is a reserved word in JavaScript. For conditional classes I use
+  clsx, which joins only the truthy class names and keeps the JSX readable.
+</SayIt>
+
+## ¿Cuándo usar estilos en línea (`style`)?
+
+El prop `style` recibe un **objeto** (no un string) con las propiedades en **camelCase** (`backgroundColor`, no `background-color`). Los números se interpretan como píxeles en las propiedades de tamaño (`width: 10` es `10px`). Las variables CSS van entre comillas: `{ "--accent": "red" }`.
+
+Úsalos para **valores dinámicos** que se calculan en tiempo de ejecución: el ancho de una barra de progreso, la posición de un tooltip, un color que elige el usuario.
+
+Limitaciones:
+
+- No admiten pseudo-clases (`:hover`, `:focus-visible`), pseudo-elementos ni media queries.
+- Ganan a casi todas las reglas de las hojas de estilo, así que son difíciles de sobrescribir.
+- Cada render crea un objeto nuevo y el HTML se llena de estilos repetidos.
+
+Un patrón muy limpio es combinar los dos: la clase define todo el estilo y el inline solo pasa el valor con una variable CSS: ``style={{ "--progress": `${percent}%` }}`` y en el CSS `width: var(--progress)`.
+
+<Example title="un ancho calculado">
+
+```tsx
+const percent = Math.min(100, (hours / 40) * 100);
+
+<div className="track">
+  <div style={{ width: `${percent}%`, background: hours > 40 ? "red" : "blue" }} />
+</div>;
+```
+
+<Live hint="pasa de 40 horas">
+  <InlineProgress />
+</Live>
+
+</Example>
+
+<SayIt>
+  Inline styles take an object with camelCase properties. I use them only for truly dynamic values
+  like a computed width, because they don't support hover states or media queries. Often I pass the
+  value as a CSS variable and keep the styling in a class.
+</SayIt>
+
+## ¿Qué son los CSS Modules?
+
+Un **CSS Module** es un archivo `.module.css` normal, pero el bundler (Vite, webpack, Next.js) **renombra cada clase** con un hash único al compilar: `.card` pasa a ser algo como `card_x7a2`. Al importarlo obtienes un objeto con los nombres generados.
+
+- **Sin choques de nombres**: dos componentes pueden tener su propia `.card`.
+- **CSS normal**: pseudo-clases, media queries, container queries, todo funciona.
+- **Cero runtime**: se genera un `.css` estático en el build. No agrega JavaScript.
+- **Funcionan con Server Components** sin configuración especial.
+
+Contras: las variantes por props son más verbosas (combinar clases a mano) y compartir valores con JS requiere variables CSS.
+
+<Example title="el archivo y su uso">
+
+```css
+/* Card.module.css */
+.card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+.active {
+  border-color: var(--accent);
+}
+```
+
+```tsx
+import styles from "./Card.module.css";
+
+<div className={clsx(styles.card, active && styles.active)}>…</div>;
+```
+
+</Example>
+
+<SayIt>
+  CSS Modules are plain CSS files where the build tool scopes every class name with a unique hash,
+  so there are no naming collisions. They have zero runtime cost and work with server components.
+</SayIt>
+
+## ¿Cómo funciona styled-components?
+
+**styled-components** es una librería de **CSS-in-JS**: escribes CSS real dentro de un _tagged template literal_ y obtienes un componente de React que ya trae sus estilos. La librería genera nombres de clase únicos e inyecta los estilos en un `<style>` del documento **en tiempo de ejecución**.
+
+Las piezas que se preguntan:
+
+- **Props en los estilos**: dentro del template, una función `(props) => …` lee las props del componente.
+- **Transient props (`$`)**: una prop que empieza con `$` (`$variant`) **no se pasa al DOM**. Sin el `$`, `variant` terminaría como atributo HTML inválido en el `<button>` y React avisaría.
+- **Helper `css`**: agrupa un bloque de estilos condicionales con interpolaciones.
+- **`ThemeProvider`**: pasa un objeto de tema por contexto, disponible como `props.theme` en todos los estilos.
+- **Tipar el tema**: se amplía la interfaz `DefaultTheme` con _declaration merging_ en un archivo `.d.ts` (en este repo, `src/04-css-html/styled.d.ts`), así `p.theme.radius` deja de ser `any`.
+
+<Example title="botón con variantes y tema">
+
+```tsx
+const Button = styled.button<{ $variant?: "primary" | "danger" }>`
+  border-radius: ${(p) => p.theme.radius};
+  padding: 6px 14px;
+  ${(p) =>
+    p.$variant === "primary" &&
+    css`
+      background: ${p.theme.accent};
+      color: white;
+    `}
+`;
+
+<ThemeProvider theme={{ radius: "8px", accent: "#3558d8", danger: "#c23b3b" }}>
+  <Button $variant="primary">Guardar</Button>
+</ThemeProvider>;
+```
+
+```ts
+// styled.d.ts
+import "styled-components";
+
+declare module "styled-components" {
+  export interface DefaultTheme {
+    radius: string;
+    accent: string;
+    danger: string;
+  }
+}
+```
+
+<Live>
+  <StyledButtons />
+</Live>
+
+</Example>
+
+<Pitfall>
+  Nunca declares un `styled.x` **dentro** de un componente: se crea un componente nuevo en cada
+  render, React desmonta y vuelve a montar el elemento, y se generan clases sin parar. Decláralos a
+  nivel de módulo.
+</Pitfall>
+
+<SayIt>
+  styled-components lets me write real CSS inside a component, with props-based variants and a theme
+  from ThemeProvider. I use transient props with a dollar sign so styling props don't leak to the
+  DOM. The trade-off is runtime cost, since styles are generated in the browser.
+</SayIt>
+
+## ¿Qué es Tailwind y por qué es tan usado?
+
+**Tailwind CSS** es un framework de **clases de utilidad**: cada clase hace una sola cosa (`p-4` es padding, `flex`, `text-sm`, `hover:bg-blue-600`, `md:grid-cols-3`). En vez de escribir CSS, compones el estilo en el JSX. En el build, Tailwind escanea tus archivos y genera **solo** el CSS de las clases que usas.
+
+A favor:
+
+- **Rápido** de escribir y sin inventar nombres de clases.
+- **Consistente**: los valores salen de una escala (espaciado, colores, tipografía) definida en el tema, es decir, de design tokens.
+- **CSS final pequeño** y **cero runtime**; funciona con Server Components.
+- Estados y responsive en línea: `hover:`, `focus-visible:`, `md:`, `dark:`.
+
+En contra:
+
+- JSX con **listas largas de clases**, que se mitigan extrayendo componentes.
+- Curva para aprender los nombres.
+- Variantes complejas requieren utilidades como `clsx` o `cva`.
+
+<Example title="la misma tarjeta con Tailwind">
+
+```tsx
+<div
+  className={clsx(
+    "rounded-lg border p-3",
+    active ? "border-blue-600 ring-2 ring-blue-600/30" : "border-gray-200",
+  )}
+>
+  Tarjeta
+</div>
+```
+
+</Example>
+
+<SayIt>
+  Tailwind is a utility-first framework: each class does one thing and I compose styles in the
+  markup. It's fast to work with, consistent because values come from a design scale, and it ships
+  only the CSS I use with no runtime. The downside is long class lists, which I handle by extracting
+  components.
+</SayIt>
+
+## ¿CSS-in-JS, CSS Modules o Tailwind? ¿Cuándo usar cada uno?
+
+No hay una respuesta única: lo importante es conocer el **costo** de cada uno y elegir según el proyecto.
+
+| Enfoque                                                    | Runtime                                      | Server Components         | A favor                                       | En contra                                            |
+| ---------------------------------------------------------- | -------------------------------------------- | ------------------------- | --------------------------------------------- | ---------------------------------------------------- |
+| **CSS Modules**                                            | Ninguno                                      | Sí                        | CSS normal, sin choques, nada que aprender    | Variantes más verbosas                               |
+| **styled-components / Emotion**                            | Sí: genera e inyecta estilos en el navegador | Solo en Client Components | Variantes por props, tema, todo en un archivo | Más JS, más trabajo en cada render, SSR más complejo |
+| **Tailwind**                                               | Ninguno                                      | Sí                        | Rápido, consistente, CSS pequeño              | Clases largas en el JSX                              |
+| **CSS-in-JS sin runtime** (vanilla-extract, Panda, StyleX) | Ninguno (se extrae en el build)              | Sí                        | Tipado y API de CSS-in-JS sin costo           | Configuración de build                               |
+| **Inline**                                                 | —                                            | Sí                        | Valores dinámicos                             | Sin hover ni media queries                           |
+
+La tendencia desde React 18–19 es alejarse del CSS-in-JS **con runtime**: con streaming SSR y Server Components, generar estilos en el navegador durante el render choca con el modelo. Muchas librerías de componentes migraron a CSS Modules, Tailwind o CSS-in-JS que se compila. En una base de código existente con styled-components, sigue siendo razonable mantenerla; no es un error usarla.
+
+<SayIt>
+  It depends on the project. Runtime CSS-in-JS like styled-components is great for theming and
+  variants but adds JavaScript and doesn't fit server components. CSS Modules and Tailwind have no
+  runtime. For a new project I'd lean toward Tailwind or CSS Modules, and whatever I choose, design
+  tokens should be the single source of truth.
+</SayIt>
+
+## ¿Qué son los design tokens?
+
+Los **design tokens** son las decisiones de diseño guardadas como **datos con nombre**: colores, espaciados, radios, tipografías, sombras, duraciones de animación. En lugar de `#3558d8` repetido en 40 archivos, existe `--color-accent` o `theme.colors.accent`.
+
+- **Una sola fuente de verdad**: el equipo de diseño y el de desarrollo usan los mismos nombres (en Figma y en el código).
+- **Temas**: modo oscuro, marca blanca o alto contraste son otro conjunto de valores para los mismos nombres.
+- Suelen tener **niveles**: tokens _base_ (`blue-600`) y tokens _semánticos_ (`color-accent`, `color-danger`) que apuntan a los base. Los componentes usan solo los semánticos.
+
+Con cualquier enfoque de estilos se pueden usar: variables CSS, el tema de styled-components o la configuración de Tailwind.
+
+<Example title="tokens con variables CSS">
+
+```css
+:root {
+  --blue-600: #3558d8; /* base */
+  --color-accent: var(--blue-600); /* semántico */
+  --space-2: 0.5rem;
+  --radius-md: 8px;
+}
+
+[data-theme="dark"] {
+  --color-accent: #7b9cff; /* solo cambia el semántico */
+}
+
+.button {
+  background: var(--color-accent);
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+}
+```
+
+</Example>
+
+<SayIt>
+  Design tokens are named design decisions, like colors, spacing and radii, shared between design
+  and code. I keep base tokens and semantic tokens, and components only use the semantic ones, so a
+  theme is just a different set of values.
+</SayIt>
+
+## ¿Cómo animar sin perder rendimiento?
+
+Para mostrar un frame, el navegador pasa por **style → layout → paint → composite**. Lo que cuesta una animación depende de qué etapa dispara la propiedad que cambias:
+
+- `width`, `height`, `top`, `left`, `margin`: cambian la geometría → **layout** (_reflow_) en cada frame, el paso más caro, y afecta a otros elementos.
+- `color`, `background`, `box-shadow`: **paint** (repintar píxeles).
+- **`transform` y `opacity`**: solo **composite**. El navegador mueve capas ya pintadas, normalmente en la GPU y fuera del hilo principal, así que siguen fluidas aunque JavaScript esté ocupado.
+
+Reglas prácticas:
+
+- Anima `transform` (`translate`, `scale`, `rotate`) y `opacity`.
+- `will-change: transform` le avisa al navegador que cree una capa, pero úsalo solo en lo que de verdad se anima: cada capa consume memoria.
+- Respeta **`prefers-reduced-motion`**: a algunas personas las animaciones grandes les causan mareos. Reduce o quita el movimiento cuando el usuario lo pide.
+
+<Example title="mismo movimiento, distinto costo">
+
+<Compare>
+<Bad>
+
+```css
+@keyframes slide {
+  to {
+    left: 260px;
+  } /* layout en cada frame */
+}
+```
+
+</Bad>
+<Good>
+
+```css
+@keyframes slide {
+  to {
+    transform: translateX(260px);
+  } /* solo composite */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ball {
+    animation: none;
+  }
+}
+```
+
+</Good>
+</Compare>
+
+<Live hint="se ven iguales; en DevTools → Performance, la de left genera layout en cada frame">
+  <AnimationDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  I animate transform and opacity, because they only need compositing and can run on the GPU, while
+  animating width, top or left triggers layout on every frame. I also respect prefers-reduced-motion
+  and turn off large animations for users who ask for it.
+</SayIt>

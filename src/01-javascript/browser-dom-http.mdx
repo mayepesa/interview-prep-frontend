@@ -1,0 +1,679 @@
+import { Example, Live, Run, SayIt, Pitfall, Tip, Compare, Bad, Good } from "../app/study";
+import { EventPropagation, EventDelegation } from "./browser-dom-http.examples";
+import { fetchJson, fakeFetch, describeFetchError } from "./http";
+
+export const meta = {
+  title: "Navegador, DOM y HTTP",
+  section: "javascript",
+  order: 50,
+  summary:
+    "Lo que pasa fuera de React: el DOM y sus eventos (captura, burbujeo, delegación), qué ocurre al escribir una URL, cómo se cargan los scripts, HTTP y REST, fetch con manejo de errores, CORS, almacenamiento del navegador y módulos ES.",
+};
+
+## ¿Qué es el DOM?
+
+El **DOM** (_Document Object Model_) es la representación del HTML **en memoria**, como un **árbol de objetos** que JavaScript puede leer y modificar. Cada etiqueta es un nodo (`Element`), el texto también es un nodo (`Text`), y todos cuelgan de `document`.
+
+Operaciones básicas:
+
+| Para…                    | API                                                                                    |
+| ------------------------ | -------------------------------------------------------------------------------------- |
+| Buscar                   | `document.querySelector(".card")`, `querySelectorAll("li")`, `getElementById("app")`   |
+| Crear e insertar         | `document.createElement("li")`, `parent.append(node)`, `node.remove()`                 |
+| Leer y cambiar contenido | `el.textContent = "…"` (seguro), `el.innerHTML = "…"` (interpreta HTML: riesgo de XSS) |
+| Atributos y clases       | `el.setAttribute("aria-label", "…")`, `el.classList.toggle("open")`, `el.dataset.id`   |
+| Recorrer                 | `el.parentElement`, `el.children`, `el.closest("li")`                                  |
+
+Cambiar el DOM es relativamente caro: puede obligar al navegador a recalcular estilos y layout. **React existe en gran parte para esto**: tú describes cómo debería verse la UI, React calcula la diferencia con lo anterior y aplica al DOM real **solo los cambios mínimos**.
+
+<Example title="crear y modificar nodos a mano">
+
+```js
+const list = document.createElement("ul");
+for (const name of ["Planner", "Reports"]) {
+  const li = document.createElement("li");
+  li.textContent = name; // textContent no interpreta HTML
+  li.dataset.id = name.toLowerCase();
+  list.append(li);
+}
+list.querySelector("li").classList.add("active");
+console.log(list.outerHTML);
+
+const item = document.createElement("li");
+const unsafe = "<img src=x onerror=alert(1)>";
+item.textContent = unsafe; // se muestra como texto: seguro
+item.innerHTML = unsafe; // se interpreta como HTML: XSS
+```
+
+<Run
+  run={(log) => {
+    const list = document.createElement("ul");
+    for (const name of ["Planner", "Reports"]) {
+      const li = document.createElement("li");
+      li.textContent = name;
+      li.dataset.id = name.toLowerCase();
+      list.append(li);
+    }
+    list.querySelector("li").classList.add("active");
+    log(list.outerHTML);
+    const li = document.createElement("li");
+    li.textContent = "<b>hola</b>";
+    log("con textContent →", li.innerHTML, `(${li.childNodes.length} nodo de texto)`);
+    li.innerHTML = "<b>hola</b>";
+    log("con innerHTML →", li.innerHTML, `(nodo: ${li.firstChild.nodeName})`);
+    log("nodos de la página ahora mismo:", document.querySelectorAll("*").length);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  The DOM is the in-memory tree of objects the browser builds from HTML, and JavaScript reads and
+  changes it through APIs like querySelector and append. DOM updates can trigger expensive style and
+  layout work, which is why React computes the minimal set of changes for us. I use textContent,
+  never innerHTML, for user data.
+</SayIt>
+
+## Propagación de eventos: captura y burbujeo
+
+Cuando haces clic en un elemento, el evento **no ocurre solo en ese elemento**. Recorre el árbol en tres fases:
+
+1. **Captura** (_capturing_): baja desde `window` hasta el elemento clickeado, pasando por todos sus ancestros.
+2. **Target**: llega al elemento clickeado (`event.target`).
+3. **Burbujeo** (_bubbling_): sube de vuelta desde el elemento hasta `window`.
+
+Por defecto, `addEventListener("click", fn)` escucha en la fase de **burbujeo**. Con `{ capture: true }` escucha en la de captura.
+
+Conceptos relacionados:
+
+- **`event.target`**: el elemento donde ocurrió el evento (el más profundo). **`event.currentTarget`**: el elemento que tiene el listener que se está ejecutando.
+- **`event.stopPropagation()`**: detiene el recorrido; los ancestros no se enteran. Úsalo con cuidado: rompe cosas como "cerrar el menú al hacer clic afuera" o analytics globales.
+- **`event.preventDefault()`**: cancela la acción **por defecto** del navegador (enviar un formulario, seguir un link), pero **no** detiene la propagación. Son cosas distintas.
+- Casi todos los eventos burbujean; algunos no, como `focus`/`blur` (sus versiones que sí burbujean son `focusin`/`focusout`) y `mouseenter`/`mouseleave`.
+
+React usa este mecanismo: no pone un listener en cada elemento, sino **uno por tipo de evento en la raíz** de la app, y desde ahí despacha a tus `onClick` (sus eventos sintéticos simulan captura y burbujeo; `onClickCapture` es la fase de captura).
+
+<Example title="listeners nativos en tres niveles">
+
+```js
+for (const [name, node] of [
+  ["outer", outer],
+  ["middle", middle],
+  ["button", button],
+]) {
+  node.addEventListener("click", () => log(`captura → ${name}`), { capture: true });
+  node.addEventListener("click", (event) => {
+    log(`burbujeo ← ${name}`);
+    if (name === "middle" && stopAtMiddle) event.stopPropagation();
+  });
+}
+```
+
+<Live hint="haz clic en el botón; luego activa stopPropagation y repite">
+  <EventPropagation />
+</Live>
+
+</Example>
+
+<SayIt>
+  A DOM event travels in three phases: capturing down from the window to the target, the target
+  itself, and bubbling back up. Listeners run in the bubbling phase by default. stopPropagation
+  stops that travel, while preventDefault only cancels the browser's default action, like submitting
+  a form.
+</SayIt>
+
+## ¿Qué es la delegación de eventos?
+
+Gracias al burbujeo, puedes poner **un solo listener en un contenedor** en vez de uno en cada hijo. Cuando ocurre un clic, el listener del padre mira `event.target` (normalmente con `closest(selector)`) para saber qué hijo se tocó.
+
+Ventajas:
+
+- **Menos listeners** y menos memoria en listas largas (una tabla de mil filas = un listener).
+- Funciona con **elementos que se agregan después**, sin registrar nada nuevo.
+- Un solo lugar donde quitar el listener.
+
+Es exactamente lo que hace React por dentro con su listener en la raíz, así que en código React normalmente escribes `onClick` en cada fila sin preocuparte. La delegación manual aparece en código sin framework, en widgets embebidos y en preguntas de entrevista.
+
+<Example title="un listener en la ul para todos los li">
+
+```js
+list.addEventListener("click", (event) => {
+  const li = event.target.closest("li"); // el clic pudo ser en un <strong> dentro del <li>
+  if (!li || !list.contains(li)) return;
+  console.log(`Click en ${li.dataset.name}`);
+});
+```
+
+<Live hint="haz clic en un proyecto, agrega uno nuevo y haz clic en él">
+  <EventDelegation />
+</Live>
+
+</Example>
+
+<Pitfall title="event.target puede ser un hijo">
+  Si el `li` contiene un `strong` o un ícono, `event.target` es ese elemento interno, no el `li`.
+  Por eso se usa `event.target.closest("li")` en vez de comparar `event.target.tagName`.
+</Pitfall>
+
+<SayIt>
+  Event delegation means attaching one listener to a parent and using event.target with closest to
+  find which child was clicked. It relies on bubbling, uses less memory and works for elements added
+  later. React does this internally with a single listener at the root.
+</SayIt>
+
+## ¿Qué pasa cuando escribes una URL y presionas Enter?
+
+Una pregunta clásica para ver si entiendes la web de punta a punta. Los pasos:
+
+1. **Parseo de la URL** y revisión de caché: el navegador decide si es una búsqueda o una dirección, y mira si tiene la página en caché (o un _service worker_ que la sirva).
+2. **DNS**: traduce el dominio (`app.example.com`) a una IP, consultando cachés del navegador, del sistema y servidores DNS.
+3. **Conexión**: TCP (_handshake_ de 3 pasos) y **TLS** para HTTPS (negocian cifrado y verifican el certificado). Con HTTP/3 se usa QUIC sobre UDP y se ahorran viajes.
+4. **Petición HTTP**: `GET /` con headers (cookies, `Accept`, `User-Agent`…).
+5. **Respuesta del servidor**: puede pasar por un CDN, balanceadores, el backend. Devuelve un status (`200`, o `301` para redirigir) y el HTML.
+6. **Render**: el navegador parsea el HTML, descarga CSS, JS, imágenes y fuentes, construye la página y la pinta (siguiente sección).
+7. **Interactividad**: se ejecuta el JavaScript. En una SPA como una app de React, aquí es cuando React monta y la página realmente "funciona".
+
+<Example title="los tiempos reales de carga de esta página">
+
+```js
+// Navigation Timing API: el navegador mide cada paso de la carga
+const [nav] = performance.getEntriesByType("navigation");
+nav.domainLookupEnd - nav.domainLookupStart; // DNS
+nav.connectEnd - nav.connectStart; // TCP + TLS
+nav.responseStart - nav.requestStart; // TTFB: tiempo hasta el primer byte
+nav.domContentLoadedEventEnd; // HTML parseado y scripts defer ejecutados
+nav.loadEventEnd; // todo cargado (imágenes, CSS…)
+```
+
+<Run
+  run={(log) => {
+    const [nav] = performance.getEntriesByType("navigation");
+    if (!nav) return log("Este navegador no expone Navigation Timing");
+    const ms = (n) => `${Math.round(n)} ms`;
+    log("protocolo:", nav.nextHopProtocol || "(desconocido)", "· tipo:", nav.type);
+    log("DNS:", ms(nav.domainLookupEnd - nav.domainLookupStart));
+    log("TCP + TLS:", ms(nav.connectEnd - nav.connectStart));
+    log("TTFB:", ms(nav.responseStart - nav.requestStart));
+    log("DOMContentLoaded:", ms(nav.domContentLoadedEventEnd));
+    log("load:", ms(nav.loadEventEnd));
+    log("(en localhost DNS y conexión son casi 0; en producción no)");
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  The browser resolves the domain through DNS, opens a TCP and TLS connection, sends an HTTP request
+  and gets the HTML back. Then it parses the HTML, fetches CSS and JavaScript, builds the DOM and
+  CSSOM, lays out and paints the page, and finally runs the JavaScript that makes it interactive,
+  which for a React SPA is when the app mounts.
+</SayIt>
+
+## El critical rendering path
+
+El **critical rendering path** es la secuencia de pasos que hace el navegador para convertir HTML, CSS y JS en píxeles:
+
+1. **DOM**: parsea el HTML a un árbol.
+2. **CSSOM**: parsea el CSS a otro árbol de reglas. **El CSS bloquea el render**: el navegador no pinta hasta tener el CSS de `<head>`, para no mostrar la página sin estilos.
+3. **Render tree**: combina DOM y CSSOM con solo lo visible (sin `display: none`, sin `<head>`).
+4. **Layout** (o _reflow_): calcula tamaño y posición de cada caja.
+5. **Paint**: dibuja píxeles (texto, colores, bordes, sombras).
+6. **Composite**: une las capas en la GPU. Animar `transform` y `opacity` solo toca este paso, por eso es lo más barato.
+
+Un `<script>` normal **bloquea el parseo del HTML**: el navegador se detiene, lo descarga y lo ejecuta (porque el script podría modificar el DOM). Optimizar el critical path es: menos CSS bloqueante, scripts con `defer` o `type="module"`, precargar lo importante (`<link rel="preload">`) y no forzar _layout thrashing_ (leer y escribir medidas del DOM alternadamente).
+
+<Example title="un head que no bloquea el primer render">
+
+```html
+<head>
+  <link rel="stylesheet" href="/app.css" />
+  <!-- bloquea el render: mantenlo chico -->
+  <link rel="preload" href="/fonts/inter.woff2" as="font" crossorigin />
+  <script type="module" src="/main.js"></script>
+  <!-- diferido por defecto -->
+</head>
+```
+
+<Run
+  run={async (log) => {
+    const box = document.createElement("div");
+    document.body.append(box);
+    const t0 = performance.now();
+    for (let i = 0; i < 300; i++) {
+      box.style.width = `${i}px`;
+      box.offsetWidth;
+    }
+    const thrash = performance.now() - t0;
+    const t1 = performance.now();
+    for (let i = 0; i < 300; i++) box.style.width = `${i}px`;
+    box.offsetWidth;
+    const batched = performance.now() - t1;
+    box.remove();
+    log(`300 escrituras + lecturas alternadas (layout thrashing): ${thrash.toFixed(1)} ms`);
+    log(`300 escrituras y una sola lectura al final: ${batched.toFixed(1)} ms`);
+  }}
+/>
+
+</Example>
+
+El ejemplo ejecutable muestra el _layout thrashing_: leer `offsetWidth` justo después de cambiar un estilo obliga al navegador a recalcular el layout en cada vuelta. Agrupar escrituras y lecturas lo evita.
+
+<SayIt>
+  The critical rendering path is DOM, CSSOM, render tree, layout, paint and composite. CSS blocks
+  rendering and classic scripts block parsing, so I keep critical CSS small, load scripts with defer
+  or as modules, and animate transform and opacity, which only need compositing.
+</SayIt>
+
+## script normal, defer, async y type="module"
+
+| Atributo              | ¿Bloquea el parseo?                  | ¿Cuándo se ejecuta?                                               | ¿Respeta el orden? |
+| --------------------- | ------------------------------------ | ----------------------------------------------------------------- | ------------------ |
+| ninguno               | **sí**, descarga y ejecuta ahí mismo | en cuanto llega                                                   | sí                 |
+| `async`               | no (descarga en paralelo)            | **apenas termina de descargar**, aunque el HTML no haya terminado | **no**             |
+| `defer`               | no                                   | cuando el HTML terminó de parsearse, antes de `DOMContentLoaded`  | sí                 |
+| `type="module"`       | no                                   | como `defer` (diferido por defecto)                               | sí                 |
+| `type="module" async` | no                                   | apenas descarga                                                   | no                 |
+
+Cuándo usar cada uno:
+
+- **`defer`** o **`type="module"`**: el código de tu app (necesita el DOM y un orden). Vite genera `<script type="module">`.
+- **`async`**: scripts independientes que no tocan tu código ni dependen de otros, como analytics.
+- **Ninguno**: casi nunca. Antes se ponía al final del `<body>` para no bloquear; hoy `defer` resuelve lo mismo desde el `<head>`.
+
+<Example title="los cuatro casos">
+
+```html
+<script src="legacy.js"></script>
+<!-- bloquea: evitar en <head> -->
+<script async src="analytics.js"></script>
+<!-- independiente, orden indiferente -->
+<script defer src="vendor.js"></script>
+<!-- 1º -->
+<script defer src="app.js"></script>
+<!-- 2º, puede usar vendor.js -->
+<script type="module" src="/src/main.tsx"></script>
+<!-- así carga Vite esta app -->
+```
+
+<Run
+  run={(log) => {
+    const scripts = [...document.querySelectorAll("script[src]")];
+    scripts.forEach((s) =>
+      log(
+        `<script src="${s.getAttribute("src")}"> type=${s.type || "(clásico)"} defer=${s.defer} async=${s.async}`,
+      ),
+    );
+    log("readyState del documento:", document.readyState);
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A plain script blocks HTML parsing. async downloads in parallel and runs as soon as it arrives, in
+  any order, which suits independent scripts like analytics. defer and module scripts download in
+  parallel and run in order after the HTML is parsed, which is what application code needs.
+</SayIt>
+
+## Métodos HTTP y códigos de estado
+
+**HTTP** es el protocolo de petición/respuesta de la web. Una petición tiene un **método**, una URL, headers y, a veces, un body. La respuesta tiene un **código de estado**, headers y un body.
+
+| Método   | Para qué            | ¿Idempotente?  | ¿Body?         |
+| -------- | ------------------- | -------------- | -------------- |
+| `GET`    | leer                | sí             | no             |
+| `POST`   | crear / acciones    | **no**         | sí             |
+| `PUT`    | reemplazar completo | sí             | sí             |
+| `PATCH`  | modificar parcial   | no garantizado | sí             |
+| `DELETE` | borrar              | sí             | normalmente no |
+
+**Idempotente** significa que repetir la petición deja el servidor igual que hacerla una vez. Importa para reintentos: reintentar un `GET` o un `PUT` es seguro; reintentar un `POST` puede crear duplicados (por eso existen las _idempotency keys_).
+
+Códigos de estado por familia:
+
+| Código | Significado            | Los que hay que saber                                                                                                                             |
+| ------ | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2xx    | éxito                  | `200 OK`, `201 Created`, `204 No Content`                                                                                                         |
+| 3xx    | redirección            | `301` permanente, `302` temporal, `304 Not Modified` (usa la caché)                                                                               |
+| 4xx    | error **del cliente**  | `400` petición inválida, `401` no autenticado, `403` sin permiso, `404` no existe, `409` conflicto, `422` validación, `429` demasiadas peticiones |
+| 5xx    | error **del servidor** | `500` error interno, `502` bad gateway, `503` no disponible, `504` timeout del gateway                                                            |
+
+La confusión típica: **401** = "no sé quién eres" (falta o venció el login). **403** = "sé quién eres, pero no tienes permiso".
+
+<Example title="res.ok según el status">
+
+```js
+new Response(null, { status: 204 }).ok; // true: ok es true para 200–299
+new Response("", { status: 304 }).ok; // false
+new Response("", { status: 404 }).ok; // false
+```
+
+<Run
+  run={(log) => {
+    for (const status of [200, 201, 204, 304, 400, 401, 403, 404, 429, 500, 503]) {
+      const body = [204, 304].includes(status) ? null : "";
+      const res = new Response(body, { status });
+      log(`${status} → ok: ${res.ok}`);
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  GET reads, POST creates, PUT replaces, PATCH updates partially and DELETE removes. GET, PUT and
+  DELETE are idempotent, so they're safe to retry. 2xx means success, 4xx is a client error, like
+  401 for not authenticated or 403 for not allowed, and 5xx is a server error.
+</SayIt>
+
+## ¿Qué es una API REST?
+
+**REST** es un estilo para diseñar APIs sobre HTTP. Sus ideas principales:
+
+- Todo es un **recurso** con una URL, nombrado con **sustantivos en plural**: `/projects`, `/projects/42`, `/projects/42/entries`.
+- La **acción** la dice el **método HTTP**, no la URL (`DELETE /projects/42`, no `POST /deleteProject`).
+- **Sin estado** (_stateless_): cada petición trae todo lo necesario (por ejemplo, el token); el servidor no recuerda peticiones anteriores.
+- Respuestas con **status correctos** y representaciones (normalmente JSON).
+- Filtros, orden y paginación como **query params**: `/projects?status=active&sort=-updatedAt&page=2`.
+
+Alternativas que conviene nombrar: **GraphQL** (un endpoint, el cliente pide exactamente los campos que necesita) y **tRPC** o RPC en general (llamar funciones del servidor con tipos compartidos).
+
+<Example title="un recurso REST completo">
+
+```text
+GET    /api/projects?status=active&page=2   → 200 [ … ]            listar
+GET    /api/projects/42                     → 200 { id: 42, … }    leer uno  (404 si no existe)
+POST   /api/projects        { name }        → 201 { id: 43, … }    crear     (422 si es inválido)
+PATCH  /api/projects/42     { name }        → 200 { id: 42, … }    modificar
+DELETE /api/projects/42                     → 204                  borrar
+GET    /api/projects/42/entries             → 200 [ … ]            sub-recurso
+```
+
+<Run
+  run={(log) => {
+    const url = new URL("/api/projects", "https://app.example.com");
+    url.searchParams.set("status", "active");
+    url.searchParams.set("sort", "-updatedAt");
+    url.searchParams.set("q", "time & billing");
+    log(url.toString());
+    log("URLSearchParams codifica los caracteres especiales por ti:", url.searchParams.get("q"));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  REST models the API as resources with URLs, uses HTTP methods for the actions and status codes for
+  the results, and each request is stateless. Filtering, sorting and pagination go in query
+  parameters.
+</SayIt>
+
+## fetch y el manejo de errores (res.ok)
+
+`fetch(url, options)` devuelve una promesa con un `Response`. Lo que más se pregunta:
+
+- **`fetch` solo rechaza por errores de red** (sin conexión, DNS, CORS bloqueado) o por `abort()`. Un **404 o un 500 NO rechazan**: la promesa se resuelve con `res.ok === false`. Si no revisas `res.ok`, tu código intenta leer un JSON de error como si fueran datos.
+- El body se lee **una sola vez** y es asíncrono: `await res.json()`, `res.text()`, `res.blob()`.
+- Para enviar JSON: `method: "POST"`, header `Content-Type: application/json` y `body: JSON.stringify(data)`.
+- `fetch` no tiene timeout propio: usa `signal: AbortSignal.timeout(ms)`.
+- Las cookies se envían a tu mismo origen por defecto; a otro origen necesitas `credentials: "include"` (y que el servidor lo permita con CORS).
+
+Lo correcto es envolver `fetch` en una función que **convierta los status no-2xx en errores** con el status adentro, para que la UI decida qué hacer en cada caso.
+
+<Example title="fetchJson con HttpError (en http.ts, con tests)">
+
+```ts
+export class HttpError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "HttpError";
+    this.status = status;
+  }
+}
+
+export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, {
+    ...init,
+    headers: { Accept: "application/json", ...init?.headers },
+  });
+  if (!res.ok) {
+    throw new HttpError(res.status, (await res.text()) || `HTTP ${res.status}`);
+  }
+  if (res.status === 204) return undefined as T;
+  return (await res.json()) as T;
+}
+
+// uso
+try {
+  const project = await fetchJson<Project>("/api/projects/42");
+} catch (error) {
+  if (error instanceof HttpError && error.status === 401) redirectToLogin();
+  else if (error instanceof TypeError) showOfflineBanner(); // error de red
+}
+```
+
+<Run
+  run={async (log) => {
+    log(
+      "fetch crudo con un 404 →",
+      (await fakeFetch("/status/404")).ok === false ? "se resolvió (no rechazó), ok = false" : "?",
+    );
+    for (const url of [
+      "/status/200",
+      "/status/204",
+      "/status/401",
+      "/status/404",
+      "/status/503",
+      "/offline",
+    ]) {
+      try {
+        const data = await fetchJson(url, undefined, fakeFetch);
+        log(`${url} → datos:`, data === undefined ? "(sin body)" : data);
+      } catch (error) {
+        log(`${url} →`, describeFetchError(error));
+      }
+    }
+    const real = await fetchJson('data:application/json,{"source":"fetch real con una data URL"}');
+    log("fetch real →", real);
+  }}
+/>
+
+</Example>
+
+<Pitfall title="Dar por hecho que fetch lanza en un 404">
+  `fetch(url).then((r) => r.json()).then(setData)` con un 404 llama a `setData` con el cuerpo del error (o
+  falla en `json()` si el error es HTML). Revisa `res.ok` siempre. Librerías como axios y React Query sí
+  tratan los no-2xx como error (axios por defecto; con React Query lo hace tu función de fetch).
+</Pitfall>
+
+<SayIt>
+  fetch only rejects on network errors or aborts; a 404 or 500 still resolves, with res.ok set to
+  false. So I wrap fetch in a helper that checks res.ok and throws an error that carries the status,
+  which lets the UI handle a 401 differently from a 500.
+</SayIt>
+
+## ¿Qué es CORS?
+
+El navegador aplica la **same-origin policy**: el JavaScript de una página solo puede **leer** respuestas de su mismo **origen** (protocolo + dominio + puerto: `https://app.example.com:443`). Esto protege al usuario: sin ella, cualquier página que visites podría leer tu correo usando tus cookies.
+
+**CORS** (_Cross-Origin Resource Sharing_) es el mecanismo para que **el servidor** diga "esta otra web sí puede leerme":
+
+- El navegador agrega el header `Origin` a la petición.
+- El servidor responde con `Access-Control-Allow-Origin: https://app.example.com` (o `*` para APIs públicas sin credenciales).
+- Si falta o no coincide, el navegador **bloquea la lectura** de la respuesta y `fetch` rechaza con un `TypeError` genérico. La petición **sí llegó al servidor**: CORS protege la lectura, no reemplaza la autorización del backend.
+
+**Preflight**: para peticiones "no simples" (métodos como `PUT`/`DELETE`, headers propios como `Authorization`, o `Content-Type: application/json`), el navegador primero manda un **`OPTIONS`** preguntando si está permitido, y solo si el servidor responde que sí, manda la petición real.
+
+Puntos clave para la entrevista:
+
+- **CORS se arregla en el servidor**, no en el frontend. En desarrollo, un **proxy** (por ejemplo `server.proxy` de Vite) evita el problema porque el navegador ve un solo origen.
+- Con cookies (`credentials: "include"`), el servidor debe responder un origen concreto (no `*`) y `Access-Control-Allow-Credentials: true`.
+- Postman o `curl` no tienen CORS: es una regla **del navegador**.
+
+<Example title="un preflight y su respuesta">
+
+```text
+OPTIONS /api/projects/42                         ← el navegador pregunta
+Origin: https://app.example.com
+Access-Control-Request-Method: PATCH
+Access-Control-Request-Headers: authorization, content-type
+
+204 No Content                                   ← el servidor permite
+Access-Control-Allow-Origin: https://app.example.com
+Access-Control-Allow-Methods: GET, POST, PATCH, DELETE
+Access-Control-Allow-Headers: authorization, content-type
+Access-Control-Max-Age: 600                      ← cachea el preflight 10 minutos
+```
+
+<Run
+  run={(log) => {
+    const here = new URL(location.href);
+    log("origen de esta página:", here.origin);
+    const others = [
+      "http://localhost:5173/api",
+      `${here.protocol}//${here.host}/api/projects`,
+      "https://api.example.com/projects",
+    ];
+    for (const u of others) {
+      const same = new URL(u).origin === here.origin;
+      log(`${u} → ${same ? "mismo origen: sin CORS" : "otro origen: necesita CORS"}`);
+    }
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Browsers only let a page read responses from its own origin. CORS is how a server opts in, by
+  returning Access-Control-Allow-Origin, and for non-simple requests the browser sends an OPTIONS
+  preflight first. It's fixed on the server, or with a dev proxy, and it isn't a substitute for
+  server-side authorization.
+</SayIt>
+
+## Cookies, localStorage, sessionStorage e IndexedDB
+
+|                     | Cookies                                      | `localStorage`                    | `sessionStorage`             | IndexedDB                                      |
+| ------------------- | -------------------------------------------- | --------------------------------- | ---------------------------- | ---------------------------------------------- |
+| Capacidad           | ~4 KB por cookie                             | ~5 MB por origen                  | ~5 MB por origen             | cientos de MB o más (según el disco)           |
+| Dura                | hasta su `Expires`/`Max-Age`                 | para siempre (hasta que se borre) | mientras viva **la pestaña** | para siempre                                   |
+| ¿Viaja al servidor? | **sí, en cada petición** a ese dominio       | no                                | no                           | no                                             |
+| API                 | `document.cookie` (incómoda) o `cookieStore` | síncrona, solo strings            | síncrona, solo strings       | **asíncrona**, objetos, índices, transacciones |
+| Accesible desde JS  | sí, salvo con `HttpOnly`                     | sí                                | sí                           | sí                                             |
+
+Cuándo usar cada una:
+
+- **Sesión / autenticación**: cookie con **`HttpOnly`** (JS no la puede leer, así un XSS no roba la sesión), **`Secure`** (solo HTTPS) y **`SameSite=Lax`** o `Strict` (protege contra CSRF). Guardar el token en `localStorage` es cómodo pero cualquier XSS lo puede leer.
+- **Preferencias de UI** (tema, columnas, último filtro): `localStorage`.
+- **Estado de un formulario que no debe sobrevivir a cerrar la pestaña**: `sessionStorage`.
+- **Muchos datos o modo offline** (caché de datos, archivos): IndexedDB (con una librería como `idb`).
+
+`localStorage` solo guarda **strings**: usa `JSON.stringify`/`JSON.parse`, y valida lo que lees (el usuario o una versión vieja de tu app pudo dejar cualquier cosa). Además, en modo privado o con cuota llena puede lanzar errores: envuélvelo en `try/catch`.
+
+<Example title="guardar y leer en cada almacenamiento">
+
+```js
+localStorage.setItem("prefs", JSON.stringify({ theme: "dark" }));
+JSON.parse(localStorage.getItem("prefs") ?? "{}"); // { theme: "dark" }
+
+sessionStorage.setItem("draft", "texto a medias"); // se borra al cerrar la pestaña
+
+document.cookie = "lang=es; Max-Age=3600; Path=/; SameSite=Lax";
+document.cookie; // "lang=es; …" (todas en un string)
+// Set-Cookie: session=abc; HttpOnly; Secure; SameSite=Lax   ← la pone el servidor, JS no la ve
+```
+
+<Run
+  run={(log) => {
+    try {
+      localStorage.setItem("study-prefs", JSON.stringify({ theme: "dark", count: 1 }));
+      const prefs = JSON.parse(localStorage.getItem("study-prefs") ?? "{}");
+      log("localStorage →", prefs, "· tipo guardado:", typeof localStorage.getItem("study-prefs"));
+      localStorage.setItem("study-number", 42);
+      log("un número vuelve como →", typeof localStorage.getItem("study-number"));
+      localStorage.removeItem("study-prefs");
+      localStorage.removeItem("study-number");
+      sessionStorage.setItem("study-draft", "texto a medias");
+      log("sessionStorage →", sessionStorage.getItem("study-draft"));
+      sessionStorage.removeItem("study-draft");
+    } catch (e) {
+      log("el almacenamiento no está disponible aquí:", e.name);
+    }
+    document.cookie = "study-lang=es; Max-Age=60; Path=/; SameSite=Lax";
+    log("document.cookie →", document.cookie || "(vacío)");
+    document.cookie = "study-lang=; Max-Age=0; Path=/";
+    log("IndexedDB disponible:", typeof indexedDB !== "undefined");
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Cookies are small and sent to the server with every request, so they're the right place for the
+  session, set as HttpOnly, Secure and SameSite. localStorage persists strings across sessions and
+  sessionStorage lasts for the tab; both are synchronous and readable by any script, so no tokens
+  there. IndexedDB is asynchronous and meant for large or offline data.
+</SayIt>
+
+## Módulos ES: import, export e import() dinámico
+
+Un **módulo ES** es un archivo con su propio scope que **exporta** lo que quiere compartir e **importa** lo que necesita. Es el sistema estándar de JavaScript (antes había CommonJS con `require`, que sigue en código de Node viejo).
+
+- **Exports con nombre**: `export function debounce…` → `import { debounce } from "./debounce-throttle"`. Puede haber muchos por archivo; el nombre debe coincidir (o renombrarse con `as`).
+- **Export por defecto**: `export default function App…` → `import App from "./App"` (el nombre lo eliges al importar). Muchos equipos prefieren exports con nombre: el autocompletado y los renombres funcionan mejor.
+- `import * as utils from "./utils"` importa todo como un objeto.
+- Los imports son **estáticos** y se resuelven antes de ejecutar: eso permite el **tree shaking** (el bundler elimina lo que no se usa).
+- Los módulos corren en **strict mode**, se ejecutan **una sola vez** aunque se importen muchas veces, y los bindings importados son **en vivo** y de solo lectura.
+- **`import()` dinámico** devuelve una **promesa** con el módulo, y se puede llamar en cualquier momento. Los bundlers lo usan para **code splitting**: el código se descarga solo cuando se necesita. `React.lazy(() => import("./Settings"))` se basa en esto.
+
+<Example title="import estático y dinámico">
+
+```js
+// debounce-throttle.ts
+export function debounce(fn, wait) {
+  /* … */
+}
+export function throttle(fn, wait) {
+  /* … */
+}
+
+// otro archivo
+import { debounce, throttle as limit } from "./debounce-throttle";
+
+// carga bajo demanda: Vite lo separa en otro archivo (chunk)
+button.addEventListener("click", async () => {
+  const { buildReport } = await import("./modules.lazy");
+  console.log(buildReport([3, 5, 2]));
+});
+```
+
+<Run
+  run={async (log) => {
+    const t0 = performance.now();
+    const mod = await import("./modules.lazy");
+    log(
+      "import() devolvió un módulo con:",
+      Object.keys(mod).join(", "),
+      `(${Math.round(performance.now() - t0)} ms)`,
+    );
+    log(mod.buildReport([3, 5, 2]));
+    log("el módulo se ejecutó a las", mod.loadedAt, "(la 1ª vez que pulsaste el botón)");
+    const again = await import("./modules.lazy");
+    log("importarlo otra vez da el mismo objeto:", again === mod);
+    const chunk = performance
+      .getEntriesByType("resource")
+      .find((r) => r.name.includes("modules.lazy"));
+    log(
+      "archivo descargado:",
+      chunk ? chunk.name.split("/").pop() : "(en desarrollo no hay chunks)",
+    );
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  ES modules export named or default values and import them statically, which lets bundlers
+  tree-shake unused code. Each module runs once, in strict mode. Dynamic import returns a promise
+  and is what code splitting and React.lazy are built on.
+</SayIt>

@@ -1,0 +1,111 @@
+import { Example, Run, SayIt, Tip } from "../app/study";
+
+export const meta = {
+  title: "Cómo usar esta guía",
+  section: "start",
+  order: 10,
+  summary:
+    "Qué hay en cada página, cómo estudiar con los ejemplos en vivo y cómo practicar con los ejercicios que tienen tests.",
+};
+
+## ¿Qué hay en cada página?
+
+Cada página del menú es un tema, y cada título grande dentro de la página es **una pregunta típica de entrevista**. Todas siguen el mismo orden:
+
+1. **Teoría**: qué es, cómo funciona, por qué importa, cuándo usarlo y cuándo no.
+2. **Ejemplo**: el código mínimo que muestra la idea.
+3. **Pruébalo**: el ejemplo funcionando, para que lo toques y veas qué pasa. En los temas de JavaScript puro hay un botón **Ejecutar** que muestra la salida.
+4. **Error común** o **Tip**, cuando hay una trampa típica.
+5. **Dilo en la entrevista**: una o dos frases en inglés para responder la pregunta en voz alta.
+
+El índice "En esta página" arriba de cada tema te deja saltar a una pregunta concreta.
+
+<Example title="así se ve un bloque ejecutable">
+
+```js
+const order = [];
+setTimeout(() => order.push("timeout"), 0);
+Promise.resolve().then(() => order.push("promise"));
+order.push("sync");
+```
+
+<Run
+  run={async (log) => {
+    const order = [];
+    setTimeout(() => order.push("timeout"), 0);
+    Promise.resolve().then(() => order.push("promise"));
+    order.push("sync");
+    await new Promise((r) => setTimeout(r, 10));
+    log(order.join(" → "));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Esta caja muestra la frase en inglés de cada concepto. Léela en voz alta: la idea es que te salga
+  natural en la entrevista, no memorizarla palabra por palabra.
+</SayIt>
+
+## ¿En qué orden estudio?
+
+| Día | Teoría (esta app)                        | Práctica (`exercises/`)                           |
+| --- | ---------------------------------------- | ------------------------------------------------- |
+| 1   | JavaScript: scope y closures, event loop | 01 debounce, 04 ¿qué imprime?                     |
+| 2   | React principiante completo              | 08 tabs, 09 todo                                  |
+| 3   | TypeScript + CSS y HTML                  | 05 emitter tipado                                 |
+| 4   | React intermedio + performance           | 10 buscador, 11 tabla                             |
+| 5   | Fundamentos de CS                        | 03 datos, 06 algoritmos, 07 LRU                   |
+| 6   | React experto + testing + seguridad      | 12 sticky notes                                   |
+| 7   | Code review + comunicación técnica       | 13 timesheet, cronometrado y explicando en inglés |
+
+Para cada tema: lee la teoría, toca el ejemplo en vivo, cierra la página y **explica el concepto en voz alta en inglés** usando la frase de "Dilo en la entrevista" como base. Si no puedes explicarlo sin mirar, vuelve a leerlo.
+
+## ¿Cómo practico con los ejercicios?
+
+La carpeta `exercises/` tiene 13 ejercicios de live coding. Cada uno trae un enunciado, un archivo `starter` donde escribes tu solución, tests que te dicen si está bien y una solución comentada para el final.
+
+```bash
+npm run practice                    # corre los ejercicios que ya empezaste (modo watch)
+npm run practice -- 08-accessible   # solo uno
+```
+
+1. Abre el `README.md` del ejercicio y pon un timer.
+2. En su `starter`, cambia `export const started = false;` por `true`.
+3. Escribe la solución hasta que sus tests pasen a verde.
+4. Compara con `solution` y anota una cosa que harías distinto.
+
+<Tip title="Es normal ver 'skipped'">
+  Antes de empezar un ejercicio, `npm run practice` lo muestra como *skipped* (omitido, en
+  amarillo). No es un error: sus tests corren cuando pones `started = true`. Al principio fallan en
+  rojo, porque todavía no está resuelto; ese es el punto de partida.
+</Tip>
+
+## ¿Cómo leo el código de cada ejemplo?
+
+El nombre del archivo de cada página aparece al final, por ejemplo `src/03-react/01-basics/use-effect.mdx`. Al lado está su `.examples.tsx`, con los componentes que ves en vivo: ábrelo en el editor y cámbialo. Con `npm run dev` corriendo, la página se actualiza al guardar.
+
+<Example title="modifica un ejemplo">
+
+1. Abre `src/03-react/01-basics/use-effect.examples.tsx`.
+2. En `Clock`, cambia `1000` por `100`.
+3. Guarda y mira el reloj en la página de useEffect.
+
+</Example>
+
+## ¿Qué cubre la guía?
+
+Está pensada para una vacante de **Senior Frontend Developer** en productos SaaS, como las apps de Jira Cloud:
+
+| Lo que pide la vacante                                            | Dónde está                                         |
+| ----------------------------------------------------------------- | -------------------------------------------------- |
+| Código legible, mantenible y testeable en TypeScript y JavaScript | JavaScript, TypeScript                             |
+| Interfaces complejas con React                                    | React (principiante, intermedio, experto, errores) |
+| Tests unitarios, de integración y de performance                  | Testing                                            |
+| Revisar el código de otros                                        | Code review                                        |
+| UX, seguridad y performance                                       | CSS y HTML, Seguridad, Performance                 |
+| Excelente CSS3 y HTML5                                            | CSS y HTML                                         |
+| Big-O, estructuras de datos y algoritmos                          | Fundamentos de CS                                  |
+| Explicar decisiones, trabajar sin spec, equipo multicultural      | Comunicación técnica                               |
+
+Los conceptos de React siguen el orden de [preguntas-entrevista-react](https://github.com/midudev/preguntas-entrevista-react) de midudev. Las explicaciones y los ejemplos de esta guía son propios.

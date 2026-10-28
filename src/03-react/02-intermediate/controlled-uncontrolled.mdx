@@ -1,0 +1,230 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  ControlledEmail,
+  ReadOnlyTrap,
+  UncontrolledForm,
+} from "./controlled-uncontrolled.examples";
+
+export const meta = {
+  title: "Controlados vs no controlados",
+  section: "react-intermediate",
+  order: 20,
+  summary:
+    "Dónde vive el valor de un input (en el estado de React o en el DOM), cómo leer un formulario con FormData y cómo manejar formularios grandes sin re-renderizar en cada tecla.",
+};
+
+## ¿Qué es un componente controlado?
+
+Un input es **controlado** cuando su valor lo decide React: le pasas `value` desde el estado y lo actualizas en `onChange`. El estado es la **única fuente de verdad** (_single source of truth_); el DOM solo muestra lo que el estado dice.
+
+El flujo en cada tecla:
+
+1. El usuario escribe una letra.
+2. `onChange` llama a `setEmail(nuevoValor)`.
+3. React re-renderiza el componente.
+4. El input muestra el `value` nuevo.
+
+Como cada tecla pasa por tu código, puedes **transformar** (pasar a minúsculas, formatear un número), **validar en vivo**, deshabilitar el botón de enviar o mostrar otro campo según lo escrito. El costo: **un render por tecla**.
+
+<Example title="email controlado que se pasa a minúsculas">
+
+```tsx
+function ControlledEmail() {
+  const [email, setEmail] = useState("");
+  const valid = /^\S+@\S+\.\S+$/.test(email); // estado derivado: se calcula
+
+  return (
+    <>
+      <input value={email} onChange={(e) => setEmail(e.target.value.toLowerCase())} />
+      <small>{valid ? "Email válido" : "Sigue escribiendo…"}</small>
+    </>
+  );
+}
+```
+
+<Live hint="escribe en mayúsculas y mira el contador de renders">
+  <ControlledEmail />
+</Live>
+
+</Example>
+
+<SayIt>
+  A controlled input gets its value from React state and updates it in onChange, so state is the
+  single source of truth. That lets me validate or format on every keystroke, at the cost of a
+  re-render per change.
+</SayIt>
+
+## ¿Qué es un componente no controlado?
+
+Un input es **no controlado** cuando el valor vive en el **DOM**, como en HTML puro. React solo pone el valor inicial con `defaultValue` (o `defaultChecked` en checkboxes) y después no se entera de lo que escribe el usuario. Lees el valor cuando lo necesitas:
+
+- con un **ref** (`inputRef.current.value`), o
+- al enviar, con **`FormData`**.
+
+Escribir **no provoca renders**, así que es más barato y necesita menos código.
+
+<Example title="formulario no controlado leído con FormData">
+
+```tsx
+function UncontrolledForm() {
+  const onSubmit = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const data = Object.fromEntries(new FormData(e.currentTarget));
+    // { project: "Planner", hours: "4", billable: "on" }
+  };
+
+  return (
+    <form onSubmit={onSubmit}>
+      <input name="project" defaultValue="Planner" />
+      <input name="hours" type="number" defaultValue={4} />
+      <input name="billable" type="checkbox" defaultChecked />
+      <button type="submit">Enviar</button>
+    </form>
+  );
+}
+```
+
+<Live hint="escribe: el contador no se mueve hasta que envías">
+  <UncontrolledForm />
+</Live>
+
+</Example>
+
+## ¿Qué es FormData y qué hay que saber de él?
+
+`FormData` es una API del navegador que lee todos los campos de un `<form>` que tengan atributo **`name`**. Detalles que se preguntan:
+
+- Los valores siempre son **strings** (o `File`): `"4"`, no `4`. Hay que convertir (`Number(...)`) y validar.
+- Un checkbox marcado envía `"on"`; **desmarcado no aparece**. Se lee con `formData.has("billable")`.
+- Campos con el mismo `name` (varios checkboxes) se leen con `formData.getAll("tags")`.
+- `Object.fromEntries(formData)` da un objeto plano, pero pierde los valores repetidos.
+
+En React 19, si pasas una función a `<form action={fn}>`, React llama a `fn(formData)` por ti y resetea el formulario al terminar. Lo vemos en la página de Actions.
+
+<Pitfall title="Sin name no hay dato">
+  Un input sin atributo `name` no aparece en `FormData`. Es el error más común al pasar de inputs
+  controlados (donde el `name` no hacía falta) a no controlados.
+</Pitfall>
+
+## value vs defaultValue
+
+| Prop           | Significa                                       | Necesita                  |
+| -------------- | ----------------------------------------------- | ------------------------- |
+| `value`        | "React controla este valor siempre"             | `onChange` (o `readOnly`) |
+| `defaultValue` | "Este es el valor inicial; luego, el DOM manda" | nada                      |
+
+Dos errores típicos salen de mezclarlos:
+
+1. **`value` sin `onChange`**: el input queda congelado, porque en cada render React vuelve a poner el mismo valor. En desarrollo verás el warning _"You provided a `value` prop to a form field without an `onChange` handler"_.
+2. **Pasar de `undefined` a un string**: si `value` empieza en `undefined` (por ejemplo, datos que aún no llegan), React lo trata como no controlado y luego avisa _"A component is changing an uncontrolled input to be controlled"_. Inicializa con `""`.
+
+<Example title="value congelado vs defaultValue">
+
+<Compare>
+<Bad>
+
+```tsx
+<input value={user?.name} />
+// sin onChange: no se puede escribir
+// user undefined → no controlado → luego controlado
+```
+
+</Bad>
+<Good>
+
+```tsx
+<input value={name} onChange={(e) => setName(e.target.value)} />
+// o, si no necesitas controlarlo:
+<input defaultValue={user?.name ?? ""} />
+```
+
+</Good>
+</Compare>
+
+<Live hint="intenta escribir en los dos">
+  <ReadOnlyTrap />
+</Live>
+
+</Example>
+
+<Tip title="Resetear un input no controlado">
+  `defaultValue` solo se usa en el primer montaje; cambiarlo después no hace nada. Para "reiniciar" el
+  formulario con datos nuevos, cambia su `key` (`<form key={user.id}>`) y React lo monta de nuevo.
+</Tip>
+
+## Ventajas y desventajas
+
+|                              | Controlado                       | No controlado                      |
+| ---------------------------- | -------------------------------- | ---------------------------------- |
+| Dónde vive el valor          | Estado de React                  | DOM                                |
+| Renders                      | Uno por tecla                    | Ninguno al escribir                |
+| Validar / formatear en vivo  | Fácil                            | Hay que leer el DOM o usar eventos |
+| Campos que dependen de otros | Fácil                            | Más difícil                        |
+| Código                       | Más (estado + handler por campo) | Menos                              |
+| Inputs `type="file"`         | No se puede                      | Siempre son no controlados         |
+
+Regla práctica: **controlado** cuando la UI reacciona a lo que se escribe (buscador, formato de tarjeta, campo que habilita otro). **No controlado** cuando solo te importa el valor al enviar.
+
+<SayIt>
+  Controlled inputs are best when the UI reacts to each keystroke, like live validation or dependent
+  fields. Uncontrolled inputs keep the value in the DOM and I read it on submit with FormData, which
+  means less code and no re-renders while typing.
+</SayIt>
+
+## ¿Cómo manejarías un formulario con muchos campos?
+
+Con 20 campos controlados a mano tendrías 20 `useState`, 20 handlers y un render de todo el formulario por cada tecla. Opciones de menor a mayor:
+
+1. **Un solo estado objeto** con un handler genérico que usa `e.target.name`. Sirve para formularios medianos.
+2. **No controlado + `FormData`** y validar al enviar. Simple y rápido.
+3. **React Hook Form + un schema** (Zod, Valibot, Yup). Es el estándar en apps grandes:
+   - registra inputs **no controlados**, así que escribir no re-renderiza el formulario entero;
+   - el **schema** define reglas y tipos en un solo lugar, y TypeScript infiere el tipo del formulario desde él;
+   - maneja errores, campos tocados (`touched`), envío asíncrono y arrays de campos.
+
+<Example title="React Hook Form + Zod (no instalado en este repo: solo código)">
+
+```tsx
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+
+const schema = z.object({
+  project: z.string().min(1, "Requerido"),
+  hours: z.coerce.number().min(1).max(24), // FormData da strings: coerce convierte
+  email: z.string().email(),
+});
+type FormValues = z.infer<typeof schema>; // el tipo sale del schema
+
+function TimesheetForm() {
+  const {
+    register,
+    handleSubmit,
+    formState: { errors, isSubmitting },
+  } = useForm<FormValues>({ resolver: zodResolver(schema) });
+
+  return (
+    <form onSubmit={handleSubmit(async (values) => save(values))}>
+      <input {...register("project")} />
+      {errors.project && <p role="alert">{errors.project.message}</p>}
+      <input type="number" {...register("hours")} />
+      <input {...register("email")} />
+      <button disabled={isSubmitting}>Guardar</button>
+    </form>
+  );
+}
+```
+
+</Example>
+
+<Tip title="Validar también en el servidor">
+  La validación del cliente es para la experiencia de usuario; cualquiera puede saltársela. El
+  servidor debe validar otra vez. Con un schema compartido (Zod en front y back) escribes las reglas
+  una sola vez.
+</Tip>
+
+<SayIt>
+  For large forms I use React Hook Form with a Zod schema. It registers uncontrolled inputs, so
+  typing doesn't re-render the whole form, and the schema gives me validation rules and the
+  TypeScript type in one place. The server still validates again.
+</SayIt>

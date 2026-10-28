@@ -1,0 +1,191 @@
+import { Example, Live, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { LazyReportDemo, NamedLazyDemo, loadReportModule } from "./lazy-suspense.examples";
+
+export const meta = {
+  title: "lazy y Suspense",
+  section: "react-intermediate",
+  order: 70,
+  summary:
+    "Cómo dividir el bundle con import dinámico y React.lazy, qué hace Suspense, cómo cargar exports nombrados y cuándo vale la pena dividir el código.",
+};
+
+## ¿Qué es un import dinámico?
+
+Un `import` normal (`import { x } from "./x"`) es **estático**: el bundler (Vite, webpack) mete ese módulo en el mismo archivo JavaScript que el código que lo importa, y el navegador lo descarga todo al principio.
+
+Un **import dinámico** es una función: `import("./x")`. Devuelve una **promesa** que se resuelve con el módulo. Cuando el bundler ve un `import()`, crea un **archivo aparte** (un _chunk_) para ese módulo y solo lo descarga cuando el código llega a esa línea.
+
+A esto se le llama **code splitting**: dividir el bundle para que la carga inicial sea más chica y rápida.
+
+<Example title="import() devuelve una promesa con el módulo">
+
+```ts
+const mod = await import("./lazy/HeavyReport");
+mod.HeavyReport; // export nombrado
+mod.default; // export por defecto
+```
+
+<Run
+  label="Importar el módulo"
+  run={async (log) => {
+    log("pidiendo el chunk…");
+    const exports = await loadReportModule();
+    log("exports del módulo:", exports);
+  }}
+/>
+
+</Example>
+
+<Tip title="Míralo en Network">
+  Abre DevTools → Network → JS y haz clic. Verás que se descarga un archivo `.js` nuevo la primera
+  vez, y ninguno las siguientes: el navegador cachea el módulo.
+</Tip>
+
+<SayIt>
+  A dynamic import is a function call that returns a promise for a module. Bundlers put that module
+  in a separate chunk that is only downloaded when the code runs, which is how code splitting works.
+</SayIt>
+
+## ¿Qué es React.lazy?
+
+`lazy(() => import("./Report"))` convierte un import dinámico en un **componente**. La primera vez que React intenta renderizarlo:
+
+1. llama a tu función y empieza la descarga,
+2. el componente **suspende** (le avisa a React "todavía no estoy listo"),
+3. React muestra el `fallback` del `<Suspense>` más cercano,
+4. cuando la promesa se resuelve, React renderiza el componente de verdad.
+
+Las siguientes veces el módulo ya está cargado y se renderiza al instante.
+
+<Example title="un reporte que se carga al abrirlo">
+
+```tsx
+const HeavyReport = lazy(() => import("./lazy/HeavyReport")); // a nivel de módulo
+
+function ReportsPage() {
+  const [show, setShow] = useState(false);
+  return (
+    <>
+      <button onClick={() => setShow(true)}>Abrir reporte</button>
+      {show && (
+        <Suspense fallback={<p>Cargando reporte…</p>}>
+          <HeavyReport />
+        </Suspense>
+      )}
+    </>
+  );
+}
+```
+
+<Live hint="abre (se ve el fallback 1 s), cierra y vuelve a abrir (ya no)">
+  <LazyReportDemo />
+</Live>
+
+</Example>
+
+<Pitfall title="Declara lazy fuera del componente">
+  Si escribes `const Report = lazy(...)` **dentro** del componente, cada render crea un componente
+  nuevo: React desmonta el anterior, pierde su estado y vuelve a suspender. Siempre a nivel de
+  módulo.
+</Pitfall>
+
+<SayIt>
+  React.lazy takes a function that returns a dynamic import and gives me a component. The first time
+  it renders it suspends while the chunk downloads, and the nearest Suspense boundary shows its
+  fallback.
+</SayIt>
+
+## ¿Qué es Suspense y para qué se usa?
+
+`<Suspense fallback={...}>` es un **límite de carga**: si cualquier componente dentro de él suspende, Suspense muestra el `fallback` en lugar de **todo su contenido** hasta que esté listo.
+
+Qué puede suspender:
+
+- un componente `lazy` mientras descarga su código,
+- `use(promise)` mientras la promesa no se resuelve (ver "use y otras APIs"),
+- librerías de datos con soporte para Suspense (React Query con `useSuspenseQuery`, frameworks como Next.js),
+- en SSR con streaming, partes de la página que el servidor envía más tarde.
+
+Ideas clave:
+
+- **Declarativo**: en vez de `if (loading) return <Spinner />` en cada componente, defines _dónde_ se muestra la carga.
+- **Se anidan**: el Suspense más cercano gana. Puedes tener uno para toda la página y otros más finos por sección.
+- **Agrupa**: si tres componentes dentro del mismo Suspense suspenden, se muestran juntos cuando los tres están listos, evitando "saltos" de UI.
+- **No captura errores**: si la carga falla (red caída), el error sube al **Error Boundary**. Por eso suelen ir juntos.
+
+```tsx
+<ErrorBoundary fallback={<p>No se pudo cargar</p>}>
+  <Suspense fallback={<PageSkeleton />}>
+    <Header />
+    <Suspense fallback={<ChartSkeleton />}>
+      <HoursChart /> {/* su carga no bloquea el Header */}
+    </Suspense>
+  </Suspense>
+</ErrorBoundary>
+```
+
+<Tip title="Suspense y transiciones">
+  Si el componente ya mostraba contenido y algo dentro vuelve a suspender (por ejemplo, al cambiar
+  de pestaña), React volvería a mostrar el fallback. Si la actualización va dentro de
+  `startTransition`, React mantiene la UI anterior en pantalla mientras carga la nueva. Ver la
+  página de Concurrent React.
+</Tip>
+
+<SayIt>
+  Suspense is a declarative loading boundary: if anything inside it suspends, like a lazy component
+  or a promise read with use, it shows the fallback for that whole subtree. Boundaries can be
+  nested, and loading errors go to an error boundary, so I usually pair them.
+</SayIt>
+
+## ¿Solo se pueden cargar exports por defecto?
+
+`React.lazy` espera que la promesa se resuelva con un módulo que tenga **`default`**. Si tu componente usa un **export nombrado** (algo común, porque los exports nombrados son más fáciles de buscar y refactorizar), adaptas el módulo con `.then`:
+
+<Example title="lazy con un export nombrado">
+
+```tsx
+// lazy/HeavyReport.tsx
+export function HeavyReport() {
+  /* … */
+}
+
+// quien lo carga
+const HeavyReport = lazy(() =>
+  import("./lazy/HeavyReport").then((m) => ({ default: m.HeavyReport })),
+);
+```
+
+<Live>
+  <NamedLazyDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  No. React.lazy needs a module with a default export, but for a named export I map the module in
+  the promise and return an object whose default is the named component.
+</SayIt>
+
+## ¿Cuándo conviene dividir el código?
+
+Dividir tiene un costo: cada chunk es **otra petición** y el usuario espera cuando lo necesita. Vale la pena para código **grande** que **no se usa en la primera pantalla**:
+
+| Buen candidato                                                 | Mal candidato                                             |
+| -------------------------------------------------------------- | --------------------------------------------------------- |
+| **Rutas**: cada página es un chunk (el caso más común)         | Lo que se ve al cargar (header, layout, la primera vista) |
+| Modales, drawers, wizards que se abren con un clic             | Componentes chicos (un botón, un ícono)                   |
+| Editores de texto enriquecido, mapas, gráficos                 | Algo que se usa en casi todas las pantallas               |
+| Funciones solo para algunos usuarios (admin, beta)             |                                                           |
+| Librerías pesadas que se usan a veces (exportar a PDF o Excel) |                                                           |
+
+Buenas prácticas:
+
+- Mide con un analizador de bundles (`rollup-plugin-visualizer`, `vite-bundle-visualizer`) para encontrar qué pesa.
+- **Precarga** lo probable: llama a `import("./Report")` en `onMouseEnter` del botón; cuando el usuario hace clic, el chunk ya está en caché.
+- Usa fallbacks con forma (_skeletons_) del tamaño del contenido, para evitar saltos de layout (CLS).
+
+<SayIt>
+  I split code by route first, then lazy-load heavy things that aren't needed on first paint, like
+  modals, editors or charts. I avoid splitting small or always-visible components because each chunk
+  is another request, and I prefetch on hover when the next step is predictable.
+</SayIt>

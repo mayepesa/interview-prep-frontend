@@ -7,9 +7,12 @@ import { STORAGE_KEY } from "./types";
 
 const { StickyNotes } = (process.env.SOLUTIONS ? solution : starter) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 beforeEach(() => localStorage.clear());
 
-describe("12 · sticky notes", () => {
+suite("12 · sticky notes", () => {
   it("shows an empty state and adds notes", async () => {
     const user = userEvent.setup();
     render(<StickyNotes />);

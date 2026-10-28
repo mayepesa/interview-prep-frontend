@@ -1,0 +1,561 @@
+import { Example, Live, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../app/study";
+import { LayoutShiftDemo, LazyReport, LongTaskDemo } from "./web-performance.examples";
+
+export const meta = {
+  title: "Performance web",
+  section: "performance",
+  order: 10,
+  summary:
+    "Cómo responder '¿cómo optimizas el rendimiento?', cómo pinta el navegador una página, qué miden LCP, INP y CLS y cómo mejorarlos, y las técnicas de carga: code splitting, imágenes, fuentes, caché, reflow y memory leaks.",
+};
+
+## ¿Cómo respondes "¿cómo optimizarías el rendimiento de una app?"
+
+La respuesta senior empieza siempre igual: **primero mido, después optimizo**. Optimizar sin medir es adivinar: puedes pasar un día memoizando componentes cuando el problema real era una imagen de 3 MB.
+
+Un orden que funciona en la entrevista y en el trabajo:
+
+1. **Medir y encontrar el cuello de botella.**
+   - _Datos de laboratorio_ (lab): Lighthouse, la pestaña **Performance** de DevTools, el **Profiler** de React DevTools, un análisis del bundle.
+   - _Datos de campo_ (field, usuarios reales): Core Web Vitals con la librería `web-vitals`, el informe de Chrome (CrUX) o una herramienta de RUM (_Real User Monitoring_) como Datadog o Sentry. Los datos de campo mandan: tu MacBook con fibra no es el teléfono de tus usuarios.
+2. **Red y carga**: menos JavaScript (code splitting, tree shaking), imágenes y fuentes optimizadas, caché y CDN.
+3. **Datos**: no pedir lo mismo dos veces (caché con React Query), paginar, cancelar peticiones viejas, no hacer una petición por tecla.
+4. **Render y ejecución**: evitar trabajo innecesario en React, virtualizar listas largas, partir tareas largas.
+5. **Vigilar**: presupuestos de tamaño en CI, Lighthouse CI y alertas de Web Vitals en producción para no retroceder.
+
+<Tip title="Debounce y throttle">
+  Para eventos muy frecuentes (escribir en un buscador, scroll, resize) se usa **debounce** o
+  **throttle**. Están explicados con ejemplos en la sección
+  [JavaScript](#01-javascript/debounce-throttle).
+</Tip>
+
+<SayIt>
+  I always start by measuring: Lighthouse and the Performance panel in the lab, and Core Web Vitals
+  from real users in production. Then I fix the biggest bottleneck first, whether that's bundle
+  size, images, data fetching or rendering, and I add budgets in CI so it doesn't regress.
+</SayIt>
+
+## ¿Qué es el critical rendering path?
+
+Es la secuencia de pasos que sigue el navegador desde que recibe el HTML hasta que pinta píxeles:
+
+1. **HTML → DOM**: parsea el HTML y construye el árbol de nodos.
+2. **CSS → CSSOM**: parsea todo el CSS y construye el árbol de estilos.
+3. **Render tree**: combina DOM y CSSOM, solo con lo visible (sin `display: none`, sin `<head>`).
+4. **Layout** (o _reflow_): calcula la posición y el tamaño de cada caja.
+5. **Paint**: dibuja los píxeles de cada capa (texto, colores, bordes, sombras).
+6. **Composite**: junta las capas en el orden correcto y las muestra.
+
+Dos recursos **bloquean** este camino:
+
+- **El CSS bloquea el render**: el navegador no pinta hasta tener el CSSOM, para no mostrar contenido sin estilo.
+- **El JavaScript clásico bloquea el parseo**: un `<script>` sin atributos detiene la construcción del DOM hasta descargarse y ejecutarse, porque podría modificarlo.
+
+Por eso los scripts usan `defer` o `type="module"`, y el CSS crítico se mantiene pequeño.
+
+| Atributo        | Descarga          | Ejecuta                                    | Orden          |
+| --------------- | ----------------- | ------------------------------------------ | -------------- |
+| (ninguno)       | Bloquea el parseo | Inmediatamente                             | Sí             |
+| `async`         | En paralelo       | Apenas llega (puede interrumpir el parseo) | No garantizado |
+| `defer`         | En paralelo       | Al terminar de parsear el HTML             | Sí             |
+| `type="module"` | En paralelo       | Como `defer` por defecto                   | Sí             |
+
+<Example title="un head que no bloquea">
+
+```html
+<head>
+  <link rel="preconnect" href="https://cdn.example.com" />
+  <link rel="stylesheet" href="/app.css" />
+  <!-- pequeño: bloquea el render -->
+  <script type="module" src="/main.js"></script>
+  <!-- no bloquea el parseo -->
+  <script async src="https://analytics.example.com/a.js"></script>
+  <!-- independiente -->
+</head>
+```
+
+</Example>
+
+<SayIt>
+  The browser builds the DOM and the CSSOM, combines them into a render tree, then does layout,
+  paint and composite. CSS blocks rendering and classic scripts block parsing, so I load scripts
+  with defer or as modules, and keep critical CSS small.
+</SayIt>
+
+## ¿Qué son los Core Web Vitals?
+
+Son las tres métricas con las que Google resume la experiencia real de carga, respuesta y estabilidad. También influyen en el posicionamiento en buscadores. Se evalúan en el **percentil 75** de las visitas reales: el 75% de tus usuarios debe estar en "bueno".
+
+| Métrica                             | Qué mide                                                                                                                                | Bueno    | Malo     |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------- | -------- |
+| **LCP** · Largest Contentful Paint  | Cuándo se pinta el elemento más grande visible (la imagen principal, un titular): _¿ya cargó?_                                          | ≤ 2.5 s  | > 4 s    |
+| **INP** · Interaction to Next Paint | Cuánto tarda la página en mostrar una respuesta visual a una interacción (clic, tecla), tomando casi la peor de la visita: _¿responde?_ | ≤ 200 ms | > 500 ms |
+| **CLS** · Cumulative Layout Shift   | Cuánto se mueve el contenido de forma inesperada: _¿es estable?_                                                                        | ≤ 0.1    | > 0.25   |
+
+INP reemplazó a FID (_First Input Delay_) en marzo de 2024. FID medía solo la demora de la **primera** interacción; INP mide todas y su respuesta completa.
+
+Otras métricas útiles para diagnosticar: **TTFB** (_Time To First Byte_, cuánto tarda el servidor) y **FCP** (_First Contentful Paint_, cuándo aparece algo).
+
+<Example title="medir con usuarios reales">
+
+```ts
+import { onCLS, onINP, onLCP } from "web-vitals";
+
+function send(metric: { name: string; value: number; rating: string }) {
+  navigator.sendBeacon("/analytics", JSON.stringify(metric));
+}
+
+onLCP(send);
+onINP(send);
+onCLS(send);
+```
+
+</Example>
+
+<SayIt>
+  Core Web Vitals are LCP for loading, INP for responsiveness and CLS for visual stability. Good is
+  LCP under 2.5 seconds, INP under 200 milliseconds and CLS under 0.1, measured at the 75th
+  percentile of real users. INP replaced FID in 2024.
+</SayIt>
+
+## ¿Cómo se mejora el LCP?
+
+El LCP suele ser una **imagen** grande o un **bloque de texto** arriba de la página. Para que se pinte rápido hay que atacar cada parte del camino:
+
+1. **Servidor rápido** (TTFB bajo): caché, CDN, SSR o páginas estáticas cuando aplica.
+2. **Que el navegador descubra el recurso pronto**: la imagen LCP debe estar en el HTML inicial, no la inyecta JavaScript después. Si está en un CSS, un `<link rel="preload">` ayuda.
+3. **Darle prioridad**: `fetchpriority="high"` en la imagen LCP y **nunca** `loading="lazy"` en ella.
+4. **Que pese poco**: AVIF o WebP, tamaño correcto con `srcset`.
+5. **Que nada bloquee el render**: CSS crítico pequeño, scripts con `defer`, menos JS antes del primer pintado.
+
+En una SPA renderizada solo en el cliente, el LCP espera a que se descargue y ejecute todo el JavaScript. Por eso SSR o generación estática mejoran mucho esta métrica.
+
+<Example title="la imagen LCP bien cargada">
+
+<Compare>
+<Bad>
+
+```html
+<img src="hero.png" loading="lazy" />
+<!-- PNG pesado, perezoso, sin tamaño -->
+```
+
+</Bad>
+<Good>
+
+```html
+<img
+  src="hero.avif"
+  width="1200"
+  height="600"
+  fetchpriority="high"
+  alt="Panel de horas del equipo"
+/>
+```
+
+</Good>
+</Compare>
+
+</Example>
+
+<SayIt>
+  To improve LCP I make sure the main image is in the initial HTML, give it fetchpriority high and
+  never lazy-load it, serve it in a modern format at the right size, and reduce render-blocking CSS
+  and JavaScript. Server rendering helps a lot for single-page apps.
+</SayIt>
+
+## ¿Cómo se mejora el INP?
+
+JavaScript corre en **un solo hilo** (el _main thread_), el mismo que procesa clics, teclas y pinta la pantalla. Si un handler o un render tarda 500 ms, durante esos 500 ms la página está congelada. Cualquier tarea de más de 50 ms se considera una **tarea larga** (_long task_).
+
+Una interacción tiene tres partes, y las tres cuentan para el INP:
+
+1. **Input delay**: el clic espera porque el hilo está ocupado con otra cosa.
+2. **Processing**: tus event handlers.
+3. **Presentation delay**: el render (React) y el pintado del siguiente frame.
+
+Cómo bajarlo:
+
+- **Partir tareas largas** y devolverle el control al navegador entre trozos (`await` con un `setTimeout`, o `scheduler.yield()` donde exista).
+- **Hacer menos en el handler**: actualizar lo visible primero y dejar lo demás para después.
+- **En React**: `startTransition` / `useDeferredValue` para que las actualizaciones pesadas sean interrumpibles, evitar re-renders innecesarios y virtualizar listas (ver [Performance en React](#05-performance/react-performance)).
+- **Mover cálculo pesado a un Web Worker**, otro hilo que no bloquea la interfaz.
+- **Menos JavaScript de terceros** (chats, analytics, tags de marketing).
+
+<Example title="una tarea larga contra tareas cortas">
+
+```ts
+// ✗ una sola tarea de 1.5 s: la página no responde
+busy(1500);
+
+// ✓ 30 tareas de 50 ms con pausas: el navegador atiende teclas entre trozos
+for (let i = 0; i < 30; i++) {
+  busy(50);
+  await new Promise((r) => setTimeout(r, 0)); // yield to main thread
+}
+```
+
+<Live hint="pulsa un botón y escribe en el input enseguida: compara las dos formas">
+  <LongTaskDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  INP is about the main thread being free when the user interacts. I break long tasks into smaller
+  chunks and yield to the browser, keep event handlers light, use transitions in React for heavy
+  updates, and move expensive computation to a web worker.
+</SayIt>
+
+## ¿Cómo se evita el CLS?
+
+El **layout shift** ocurre cuando algo aparece o cambia de tamaño **después** de que el contenido ya se pintó, y empuja lo que estaba. Es molesto (pierdes la línea que leías) y peligroso (haces clic en "Eliminar" porque el botón se movió).
+
+Causas típicas y solución:
+
+| Causa                                              | Solución                                                                              |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| Imágenes, videos, iframes sin tamaño               | `width` y `height` en el HTML, o `aspect-ratio` en CSS: el navegador reserva el hueco |
+| Anuncios, banners, embeds que llegan tarde         | Reservar el espacio con `min-height`                                                  |
+| Contenido insertado **arriba** del existente       | Insertarlo abajo, o en un overlay, o solo tras una acción del usuario                 |
+| Skeletons de distinto tamaño que el contenido real | Que el skeleton mida lo mismo                                                         |
+| Fuentes web que cambian el ancho del texto         | `font-display` + fuente de respaldo con métricas ajustadas (`size-adjust`)            |
+| Animar `top`, `height`, `margin`                   | Animar `transform`                                                                    |
+
+Los cambios en los **500 ms posteriores a una interacción** del usuario no cuentan como shift inesperado (abrir un acordeón al hacer clic está bien).
+
+<Example title="un banner que llega tarde">
+
+```css
+.banner-slot {
+  min-height: 60px;
+} /* el espacio existe antes que el banner */
+.video-embed {
+  aspect-ratio: 16 / 9;
+  width: 100%;
+} /* reserva el alto antes de cargar */
+```
+
+<Live hint="pulsa 'Simular carga' con y sin reservar el espacio, y mira el botón">
+  <LayoutShiftDemo />
+</Live>
+
+</Example>
+
+<SayIt>
+  Layout shift happens when content appears late and pushes what's already on screen. I always set
+  width and height on images, reserve space for anything that loads later, make skeletons match the
+  final size, and avoid inserting content above what the user is reading.
+</SayIt>
+
+## ¿Qué es code splitting y lazy loading?
+
+Por defecto, el bundler junta toda la app en un archivo JavaScript. El usuario descarga, parsea y ejecuta el código de **todas** las pantallas aunque solo abra una. **Code splitting** parte el bundle en varios _chunks_ que se descargan cuando se necesitan.
+
+La herramienta es el **`import()` dinámico**: el bundler (Vite, webpack) ve un `import()` y pone ese módulo en un chunk aparte. En React se combina con `lazy` y `Suspense`:
+
+- **Por ruta**: cada página es un chunk. Es el corte con mejor relación costo/beneficio.
+- **Por componente pesado**: un editor de texto, un gráfico, un modal que casi nadie abre.
+- **Librerías pesadas bajo demanda**: `const { jsPDF } = await import("jspdf")` solo al exportar.
+
+Más detalle sobre `lazy` y `Suspense` en [Lazy y Suspense (React · Intermedio)](#03-react/02-intermediate/lazy-suspense).
+
+**Lazy loading** es la idea general de cargar algo solo cuando hace falta: chunks de JS, imágenes fuera de pantalla (`loading="lazy"`), iframes.
+
+<Example title="un reporte que se descarga al pedirlo">
+
+```tsx
+import { lazy, Suspense } from "react";
+
+const HeavyReport = lazy(() => import("./HeavyReport")); // chunk aparte
+
+{
+  show && (
+    <Suspense fallback={<p>Cargando reporte…</p>}>
+      <HeavyReport />
+    </Suspense>
+  );
+}
+```
+
+<Live hint="abre DevTools → Network antes de pulsar: verás llegar un .js nuevo">
+  <LazyReport />
+</Live>
+
+</Example>
+
+<Pitfall>
+  No dividas todo en chunks diminutos: cada uno es una petición más y una espera más. Y si un chunk
+  casi seguro se va a usar (la siguiente pantalla del flujo), se puede **precargar** al pasar el
+  mouse por el enlace o cuando el navegador está libre.
+</Pitfall>
+
+<SayIt>
+  Code splitting breaks the bundle into chunks that load on demand, using dynamic import. In React I
+  combine React.lazy with Suspense, usually per route and for heavy components like editors or
+  charts, so the first load only ships what that screen needs.
+</SayIt>
+
+## ¿Qué es tree shaking y cómo analizas el bundle?
+
+**Tree shaking** es la eliminación del código que se exporta pero **nunca se importa**. El bundler analiza los `import` y `export` estáticos de los **ES modules** y descarta lo que no se usa.
+
+Lo que lo rompe:
+
+- Librerías publicadas solo en **CommonJS** (`require`), que no se pueden analizar estáticamente. Por ejemplo, `lodash` entero frente a `lodash-es` o imports por función.
+- Módulos con **efectos secundarios** al importarse (modifican algo global). Las librerías declaran `"sideEffects": false` en su `package.json` para permitir eliminarlos.
+- Importar "todo": `import * as Icons from "icons"` y usar uno dinámicamente.
+
+Para ver qué pesa en tu bundle:
+
+- **`rollup-plugin-visualizer`** (Vite/Rollup) o **`webpack-bundle-analyzer`**: un mapa de cajas con el tamaño de cada dependencia.
+- **bundlephobia.com** o **pkg-size**: cuánto pesa una librería **antes** de instalarla.
+- Un **presupuesto** en CI (`size-limit`) que falla si el bundle crece más de lo acordado.
+
+<Example title="importar solo lo que usas">
+
+<Compare>
+<Bad>
+
+```ts
+import _ from "lodash"; // CommonJS: entra la librería entera
+_.debounce(fn, 300);
+```
+
+</Bad>
+<Good>
+
+```ts
+import { debounce } from "lodash-es"; // ES modules: solo debounce
+debounce(fn, 300);
+```
+
+</Good>
+</Compare>
+
+</Example>
+
+<SayIt>
+  Tree shaking removes exports that are never imported, and it only works with ES modules and
+  side-effect-free code. To find what's heavy I use a bundle visualizer, check libraries on
+  bundlephobia before adding them, and set a size budget in CI.
+</SayIt>
+
+## ¿Cómo optimizas las imágenes?
+
+Las imágenes suelen ser la mayor parte del peso de una página. Lo que hay que saber:
+
+- **Formato**: **AVIF** comprime más, **WebP** tiene soporte universal; JPEG/PNG como respaldo en `<picture>`. **SVG** para íconos y logos (vectoriales, pequeños).
+- **Tamaño correcto**: no sirvas una imagen de 2000px en un hueco de 400px. Usa `srcset` + `sizes` para que el navegador elija la resolución.
+- **`width` y `height`** siempre: el navegador calcula la proporción y reserva el espacio (evita CLS).
+- **`loading="lazy"`** en imágenes **fuera de la pantalla inicial**: se descargan al acercarse con el scroll. Nunca en la imagen LCP.
+- **`fetchpriority="high"`** en la imagen principal; `decoding="async"` para no bloquear con la decodificación.
+- **CDN de imágenes** (Cloudinary, imgix, el de Next.js) que redimensiona y convierte el formato por URL.
+
+<Example title="imagen de una galería">
+
+```html
+<img
+  src="avatar-200.webp"
+  srcset="avatar-200.webp 200w, avatar-400.webp 400w"
+  sizes="200px"
+  width="200"
+  height="200"
+  loading="lazy"
+  decoding="async"
+  alt="Foto de perfil de Ana"
+/>
+```
+
+</Example>
+
+<SayIt>
+  I serve images in AVIF or WebP at the size they're displayed with srcset, always set width and
+  height to avoid layout shift, lazy-load images below the fold, and give the hero image
+  fetchpriority high.
+</SayIt>
+
+## ¿Cómo cargas las fuentes web sin afectar el rendimiento?
+
+Una fuente web es un recurso más que puede retrasar el texto. Mientras se descarga, el navegador tiene que decidir qué mostrar:
+
+- **FOIT** (_Flash of Invisible Text_): el texto no se ve hasta que llega la fuente.
+- **FOUT** (_Flash of Unstyled Text_): se ve con una fuente del sistema y luego cambia.
+
+`font-display` controla ese comportamiento: `swap` muestra el texto enseguida con la fuente de respaldo (prioriza que se lea); `optional` usa la fuente web solo si llega muy rápido (prioriza estabilidad, cero CLS).
+
+Buenas prácticas:
+
+- **WOFF2**, el formato más comprimido.
+- **Pocas variantes**: cada peso e itálica es un archivo; una _variable font_ puede reemplazar varios.
+- **Subsetting**: solo los caracteres que usas (por ejemplo, latín).
+- **`preload`** de la fuente principal, y _self-hosting_ para evitar una conexión extra a otro dominio.
+- O usar **fuentes del sistema** (`system-ui`): cero bytes.
+
+<Example title="@font-face eficiente">
+
+```css
+@font-face {
+  font-family: "Inter";
+  src: url("/fonts/inter-var-latin.woff2") format("woff2");
+  font-weight: 100 900; /* variable font: un archivo, todos los pesos */
+  font-display: swap;
+}
+```
+
+```html
+<link rel="preload" href="/fonts/inter-var-latin.woff2" as="font" type="font/woff2" crossorigin />
+```
+
+</Example>
+
+<SayIt>
+  I use WOFF2, as few font files as possible, ideally a variable font, subset to the characters I
+  need, preload the main one and set font-display swap so text is visible right away.
+</SayIt>
+
+## ¿Cómo ayudan la caché HTTP y una CDN?
+
+La petición más rápida es la que **no se hace**. La caché HTTP se controla con el header `Cache-Control` que envía el servidor:
+
+- **Archivos con hash en el nombre** (`main.3f9a2c.js`, que generan Vite y webpack): `Cache-Control: public, max-age=31536000, immutable`. Se cachean un año; si el contenido cambia, cambia el nombre y el navegador pide el nuevo.
+- **El `index.html`**: `Cache-Control: no-cache`. El navegador lo revalida en cada visita (con `ETag`, y si no cambió recibe un `304` vacío), así siempre apunta a los últimos archivos.
+- **Respuestas de API**: depende del dato; muchas veces `no-store` o caché corta, y la caché se maneja en el cliente con React Query.
+
+Una **CDN** (_Content Delivery Network_: Cloudflare, CloudFront, Fastly) guarda copias de tus archivos en servidores repartidos por el mundo, cerca del usuario. Baja la latencia y la carga de tu servidor.
+
+Otras mejoras de red: compresión **Brotli** o gzip, **HTTP/2 y HTTP/3** (varias peticiones por una conexión), y `<link rel="preconnect">` para dominios que vas a usar pronto. Un **Service Worker** permite caché programable y funcionamiento offline.
+
+<Example title="headers de caché típicos de una SPA">
+
+```http
+# /assets/main.3f9a2c.js
+Cache-Control: public, max-age=31536000, immutable
+
+# /index.html
+Cache-Control: no-cache
+ETag: "a1b2c3"
+```
+
+</Example>
+
+<SayIt>
+  Hashed static assets get a one-year immutable cache, and the HTML gets no-cache so it's
+  revalidated on every visit and always points to the latest files. A CDN serves everything from a
+  location close to the user, with Brotli compression and HTTP/2 or 3.
+</SayIt>
+
+## ¿Qué diferencia hay entre reflow y repaint?
+
+- **Reflow** (o _layout_): recalcular posición y tamaño de los elementos. Lo provocan cambios de geometría: `width`, `height`, `margin`, `padding`, `top`, `font-size`, agregar o quitar nodos, cambiar el texto. Es caro y puede afectar a muchos elementos (un cambio en un padre afecta a todos sus hijos).
+- **Repaint**: volver a dibujar píxeles sin cambiar la geometría: `color`, `background`, `visibility`, `box-shadow`. Más barato.
+- **Solo composite**: `transform` y `opacity` en un elemento con su propia capa. Ni reflow ni repaint.
+
+El problema clásico es el **layout thrashing** (_forced synchronous layout_): leer una medida (`offsetHeight`, `getBoundingClientRect()`, `scrollTop`) justo después de escribir un estilo obliga al navegador a calcular el layout **en ese momento**, y si lo haces en un loop, calculas el layout N veces en vez de una. La solución: **leer todo primero, escribir todo después** (o usar `requestAnimationFrame` para agrupar las escrituras).
+
+<Example title="layout thrashing contra lecturas agrupadas">
+
+```ts
+// ✗ leer y escribir intercalado: un layout por elemento
+for (const el of items) {
+  const w = el.offsetWidth; // lectura: fuerza layout
+  el.style.width = `${w + 1}px`; // escritura: invalida el layout
+}
+
+// ✓ todas las lecturas, luego todas las escrituras: un solo layout
+const widths = items.map((el) => el.offsetWidth);
+items.forEach((el, i) => (el.style.width = `${widths[i]! + 1}px`));
+```
+
+<Run
+  label="Medir con 1000 elementos reales"
+  run={(log) => {
+    const box = document.createElement("div");
+    box.style.cssText = "position:absolute;left:-9999px;top:0;width:500px";
+    const items = Array.from({ length: 1000 }, () => {
+      const el = document.createElement("div");
+      el.style.width = "100px";
+      el.textContent = "x";
+      box.appendChild(el);
+      return el;
+    });
+    document.body.appendChild(box);
+
+    let t = performance.now();
+    for (const el of items) {
+      const w = el.offsetWidth;
+      el.style.width = `${w + 1}px`;
+    }
+    log(`intercalado: ${(performance.now() - t).toFixed(1)} ms`);
+
+    t = performance.now();
+    const widths = items.map((el) => el.offsetWidth);
+    items.forEach((el, i) => (el.style.width = `${widths[i] + 1}px`));
+    log(`agrupado:    ${(performance.now() - t).toFixed(1)} ms`);
+
+    box.remove();
+
+}}
+/>
+
+</Example>
+
+<SayIt>
+  Reflow recalculates layout when geometry changes and is expensive; repaint only redraws pixels.
+  Animating transform and opacity avoids both. I also avoid layout thrashing, which is reading
+  layout values right after writing styles in a loop, by batching all reads before all writes.
+</SayIt>
+
+## ¿Qué es un memory leak y cómo lo detectas?
+
+Un **memory leak** es memoria que la app ya no necesita pero que el _garbage collector_ no puede liberar, porque algo todavía tiene una referencia a ella. En una SPA la pestaña puede quedar abierta horas, así que una fuga pequeña por navegación termina en una página lenta o que se cierra.
+
+Causas típicas en front end:
+
+- **Event listeners** en `window` o `document` que no se quitan al desmontar.
+- **`setInterval`** o suscripciones (WebSocket, un store, un observable) sin cancelar.
+- **Closures** que guardan objetos grandes (un listener que captura una lista enorme).
+- **Nodos del DOM separados** (_detached_): quitados de la página pero todavía referenciados desde JS.
+- **Cachés que solo crecen**: un `Map` global sin límite (ahí un LRU o un `WeakMap` ayudan).
+
+En React casi todas se evitan con el **cleanup de `useEffect`**.
+
+Cómo detectarlo: DevTools → **Memory** → tomar un _heap snapshot_, repetir la acción sospechosa varias veces (abrir y cerrar un modal), tomar otro snapshot y comparar qué objetos crecen. Buscar "Detached" en el snapshot muestra nodos del DOM que quedaron vivos. La pestaña **Performance** con la opción _Memory_ muestra si el heap sube sin bajar.
+
+<Example title="el leak más común en React">
+
+<Compare>
+<Bad>
+
+```tsx
+useEffect(() => {
+  window.addEventListener("resize", onResize);
+  const id = setInterval(poll, 5000);
+}, []); // al desmontar, los dos siguen vivos
+```
+
+</Bad>
+<Good>
+
+```tsx
+useEffect(() => {
+  window.addEventListener("resize", onResize);
+  const id = setInterval(poll, 5000);
+  return () => {
+    window.removeEventListener("resize", onResize);
+    clearInterval(id);
+  };
+}, []);
+```
+
+</Good>
+</Compare>
+
+</Example>
+
+<SayIt>
+  A memory leak is memory that's no longer needed but still referenced, so it can't be garbage
+  collected. In React the usual causes are listeners, intervals or subscriptions without cleanup. I
+  find them with heap snapshots in the Memory panel: repeat an action, compare snapshots, and look
+  for objects or detached DOM nodes that keep growing.
+</SayIt>

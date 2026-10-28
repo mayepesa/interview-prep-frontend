@@ -7,6 +7,9 @@ import type { Entry } from "./types";
 
 const { EntriesTable } = (process.env.SOLUTIONS ? solution : starter) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 const entries: Entry[] = [
   { id: "1", project: "Reports", date: "2026-11-03", hours: 2 },
   { id: "2", project: "Billing", date: "2026-11-01", hours: 8 },
@@ -25,7 +28,7 @@ function projects() {
     .map((row) => within(row).getAllByRole("cell")[0]?.textContent);
 }
 
-describe("11 · sortable table", () => {
+suite("11 · sortable table", () => {
   it("renders the first page in the original order", () => {
     render(<EntriesTable entries={entries} pageSize={3} />);
     expect(projects()).toEqual(["Reports", "Billing", "Planner"]);

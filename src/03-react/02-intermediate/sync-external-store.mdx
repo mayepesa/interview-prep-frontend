@@ -1,0 +1,215 @@
+import { Example, Live, Run, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import {
+  TimerStoreDemo,
+  WindowWidthLabel,
+  createStore,
+  hoursReducer,
+} from "./sync-external-store.examples";
+
+export const meta = {
+  title: "useSyncExternalStore",
+  section: "react-intermediate",
+  order: 120,
+  summary:
+    "Cómo suscribir componentes a datos que viven fuera de React, cómo funciona Zustand por dentro y qué son Flux y Redux.",
+};
+
+## ¿Qué es un "store externo" y qué problema hay con él?
+
+La mayoría del estado vive **dentro** de React (`useState`, `useReducer`, Context). Pero a veces los datos viven **fuera**:
+
+- APIs del navegador: `window.innerWidth`, `navigator.onLine`, `matchMedia`, `localStorage`,
+- librerías de estado: Zustand, Redux, Jotai,
+- SDKs: un cliente de WebSocket, un feature flag service.
+
+Antes, la forma de conectarlos era `useState` + `useEffect` con una suscripción. Funciona, pero tiene dos problemas:
+
+1. **Tearing** (desgarro): con Concurrent React, un render se puede pausar. Si el store cambia durante esa pausa, parte del árbol se renderiza con el valor viejo y parte con el nuevo. La UI muestra datos inconsistentes al mismo tiempo.
+2. **Un render de más**: el primer render usa el valor inicial y el efecto lo corrige después.
+
+`useSyncExternalStore` es el hook oficial para esto: React se encarga de suscribir, leer el valor y garantizar que todo el árbol vea **el mismo valor** en un render.
+
+## ¿Para qué sirve useSyncExternalStore?
+
+```tsx
+const value = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot?);
+```
+
+| Argumento             | Qué hace                                                                                                                |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `subscribe(callback)` | Se suscribe al store y llama a `callback` cuando cambia. **Devuelve la función para desuscribirse.**                    |
+| `getSnapshot()`       | Devuelve el valor actual. React lo llama en cada render y cuando el store avisa; si cambió (`Object.is`), re-renderiza. |
+| `getServerSnapshot()` | Opcional. El valor que se usa en SSR y durante la hidratación (en el servidor no hay `window`).                         |
+
+<Example title="el ancho de la ventana como store externo">
+
+```tsx
+function subscribe(callback: () => void) {
+  window.addEventListener("resize", callback);
+  return () => window.removeEventListener("resize", callback);
+}
+
+function useWindowWidth() {
+  return useSyncExternalStore(
+    subscribe, // definida FUERA del componente: estable
+    () => window.innerWidth, // getSnapshot
+    () => 1024, // getServerSnapshot
+  );
+}
+```
+
+<Live hint="cambia el tamaño de la ventana">
+  <WindowWidthLabel />
+</Live>
+
+</Example>
+
+<Pitfall title="getSnapshot debe devolver lo mismo si nada cambió">
+  Si `getSnapshot` devuelve un **objeto nuevo** en cada llamada (`() => ({ ...store.state })`), React cree que
+  el store cambió siempre y entra en un bucle infinito de renders. Devuelve valores primitivos o la **misma
+  referencia** mientras los datos no cambien. Y define `subscribe` fuera del componente (o con `useCallback`):
+  si cambia en cada render, React se desuscribe y se vuelve a suscribir cada vez.
+</Pitfall>
+
+<SayIt>
+  useSyncExternalStore subscribes a component to data that lives outside React. I give it a
+  subscribe function and a getSnapshot function, and React re-renders when the snapshot changes,
+  without tearing in concurrent rendering. The snapshot must be stable when nothing changed.
+</SayIt>
+
+## ¿Cómo funciona Zustand por dentro?
+
+Zustand es, en esencia, tres piezas pequeñas:
+
+1. **Un store fuera de React**: una variable `state` y un `Set` de listeners.
+2. **`setState`**: crea un estado nuevo (inmutable) y avisa a todos los listeners.
+3. **Un hook con selector** construido sobre `useSyncExternalStore`: `getSnapshot` devuelve **solo la parte** que el componente seleccionó. Si esa parte no cambió (`Object.is`), el componente **no se renderiza**, aunque otra parte del store sí haya cambiado.
+
+Esa es la diferencia clave con Context: con Context, todos los consumidores se renderizan cuando cambia el valor; con un store con selectores, solo los que leen la parte que cambió.
+
+<Example title="un mini Zustand en 20 líneas">
+
+```tsx
+function createStore<S>(initial: S) {
+  let state = initial;
+  const listeners = new Set<() => void>();
+  return {
+    getState: () => state,
+    setState: (update: (s: S) => S) => {
+      state = update(state);
+      listeners.forEach((l) => l());
+    },
+    subscribe: (l: () => void) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+  };
+}
+
+const timerStore = createStore({ project: "Planner", seconds: 0, running: false });
+
+function useTimer<T>(selector: (s: TimerState) => T): T {
+  return useSyncExternalStore(timerStore.subscribe, () => selector(timerStore.getState()));
+}
+
+function Seconds() {
+  const seconds = useTimer((s) => s.seconds); // solo se renderiza si cambia seconds
+  return <p>Segundos: {seconds}</p>;
+}
+```
+
+<Live hint="inicia el timer: solo Seconds se renderiza cada segundo; luego escribe en Proyecto">
+  <TimerStoreDemo />
+</Live>
+
+</Example>
+
+El store sigue vivo aunque cambies de página: está fuera de React, a nivel de módulo.
+
+La API real de Zustand es casi igual:
+
+```tsx
+import { create } from "zustand";
+
+const useTimer = create<TimerState>()((set) => ({
+  seconds: 0,
+  tick: () => set((s) => ({ seconds: s.seconds + 1 })),
+}));
+
+const seconds = useTimer((s) => s.seconds);
+```
+
+<Pitfall title="Selectores que devuelven objetos nuevos">
+  `useTimer((s) => ({ a: s.a, b: s.b }))` crea un objeto nuevo en cada llamada: mismo problema de bucle que con
+  `getSnapshot`. Selecciona valores sueltos o usa `useShallow` de Zustand, que compara el objeto por contenido.
+</Pitfall>
+
+<SayIt>
+  Zustand keeps state in a plain store outside React with a set of listeners. Its hook is built on
+  useSyncExternalStore with a selector, so each component subscribes to a slice and only re-renders
+  when that slice changes. That's the big difference from Context.
+</SayIt>
+
+## ¿Qué es Flux? ¿Y Redux?
+
+**Flux** es un patrón de arquitectura que Facebook propuso junto con React. Su idea central es el **flujo de datos unidireccional**:
+
+```
+Vista ──(acción)──▶ Dispatcher ──▶ Store ──(nuevo estado)──▶ Vista
+```
+
+1. La vista no modifica el estado directamente: **despacha una acción** (un objeto que describe qué pasó: `{ type: "added", hours: 3 }`).
+2. El **store** recibe la acción y calcula el estado nuevo.
+3. Las vistas suscritas se actualizan.
+
+Así todos los cambios pasan por un solo lugar: son predecibles, se pueden loguear y depurar.
+
+**Redux** simplificó Flux con tres principios:
+
+- **Un solo store** para toda la app.
+- **El estado es de solo lectura**: solo cambia despachando acciones.
+- **Los cambios se hacen con funciones puras** llamadas **reducers**: `(estadoAnterior, acción) => estadoNuevo`.
+
+Como los reducers son puros, Redux DevTools puede guardar cada acción y "viajar en el tiempo". Hoy se usa **Redux Toolkit** (`createSlice`, `configureStore`), que elimina el boilerplate y usa Immer para escribir actualizaciones "mutables" que en realidad son inmutables. El `useReducer` de React usa la misma idea, pero para estado local.
+
+<Example title="flujo Flux: acciones → reducer → store → suscriptores">
+
+```ts
+function hoursReducer(state, action) {
+  switch (action.type) {
+    case "added":
+      return { total: state.total + action.hours, entries: state.entries + 1 };
+    case "reset":
+      return { total: 0, entries: 0 };
+  }
+}
+
+const store = createStore({ total: 0, entries: 0 });
+const dispatch = (action) => store.setState((s) => hoursReducer(s, action));
+
+store.subscribe(() => console.log("vista actualizada:", store.getState()));
+dispatch({ type: "added", hours: 3 });
+```
+
+<Run
+  run={(log) => {
+    const store = createStore({ total: 0, entries: 0 });
+    const dispatch = (action) => {
+      log("acción →", action);
+      store.setState((s) => hoursReducer(s, action));
+    };
+    store.subscribe(() => log("   vista actualizada:", store.getState()));
+    dispatch({ type: "added", hours: 3 });
+    dispatch({ type: "added", hours: 5 });
+    dispatch({ type: "reset" });
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Flux is an architecture with one-way data flow: views dispatch actions, a store computes the new
+  state, and subscribed views update. Redux simplified it to a single store updated by pure reducer
+  functions, which makes changes predictable and enables time-travel debugging. Today I'd use Redux
+  Toolkit or Zustand on top of the same idea.
+</SayIt>

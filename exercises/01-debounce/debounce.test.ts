@@ -4,10 +4,13 @@ import * as starter from "./starter";
 
 const { debounce } = (process.env.SOLUTIONS ? solution : starter) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
-describe("01 · debounce", () => {
+suite("01 · debounce", () => {
   it("waits before calling", () => {
     const fn = vi.fn();
     const d = debounce(fn, 200);

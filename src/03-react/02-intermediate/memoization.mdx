@@ -1,0 +1,258 @@
+import { Example, Live, Pitfall, SayIt, Tip, Compare, Bad, Good } from "../../app/study";
+import { ParentRerender, StablePropsDemo, UseMemoDemo } from "./memoization.examples";
+
+export const meta = {
+  title: "Re-renders y memoización",
+  section: "react-intermediate",
+  order: 40,
+  summary:
+    "Qué provoca un re-render, cómo React.memo, useMemo y useCallback lo evitan, por qué no conviene usarlos siempre y qué cambia el React Compiler.",
+};
+
+## ¿Qué provoca un re-render?
+
+"Renderizar" significa que React **llama a tu función componente** para obtener el JSX nuevo. Después compara ese JSX con el anterior y solo toca el DOM donde hay diferencias. Un render no es lo mismo que un cambio en el DOM: muchos renders no cambian nada en pantalla.
+
+Un componente se vuelve a renderizar por **tres** motivos:
+
+1. **Su estado cambia** (`setState` con un valor distinto según `Object.is`).
+2. **Su padre se renderiza.** Por defecto, cuando un componente se renderiza, React renderiza **todos sus hijos**, aunque sus props no hayan cambiado.
+3. **Un contexto que lee cambia de valor** (ver la página de Context).
+
+Un mito frecuente: "un componente se re-renderiza cuando cambian sus props". En realidad se re-renderiza porque **el padre** se renderizó; las props nuevas son una consecuencia. Si quieres que un hijo se salte el render cuando sus props son iguales, tienes que pedirlo con `React.memo`.
+
+<Example title="el padre cambia su estado">
+
+```tsx
+function Parent() {
+  const [count, setCount] = useState(0);
+  return (
+    <>
+      <button onClick={() => setCount((c) => c + 1)}>{count}</button>
+      <PlainChild /> {/* sin props, pero se renderiza igual */}
+      <MemoChild /> {/* memo: props iguales → se salta */}
+    </>
+  );
+}
+```
+
+<Live hint="haz clic y compara los contadores">
+  <ParentRerender />
+</Live>
+
+</Example>
+
+<Tip title="Re-renderizar es normal">
+  React está hecho para renderizar seguido; la mayoría de los renders tardan microsegundos. Solo es
+  un problema cuando un render es **caro** (listas grandes, gráficos, cálculos) o cuando pasa **muy
+  a menudo** (en cada tecla, en cada frame de scroll).
+</Tip>
+
+<SayIt>
+  A component re-renders when its own state changes, when its parent re-renders, or when a context
+  it reads changes. Props changing isn't a trigger by itself: by default every child re-renders with
+  its parent unless it's wrapped in React.memo.
+</SayIt>
+
+## ¿Cómo funciona React.memo y cuándo es útil?
+
+`memo(Component)` devuelve un componente que, antes de renderizar, **compara las props nuevas con las anteriores**. Si todas son iguales, reutiliza el resultado anterior y se salta el render (y el de todos sus hijos).
+
+La comparación es **superficial** (_shallow_): compara cada prop con `Object.is`. Para strings, números y booleanos compara el valor. Para **objetos, arrays y funciones compara la referencia**: `{}` creado en este render es distinto de `{}` creado en el anterior, aunque tenga lo mismo.
+
+```tsx
+const Chart = memo(function Chart({ totals, onSelect }: ChartProps) {
+  // …render caro…
+});
+```
+
+Cuándo sirve:
+
+- el componente es **caro** de renderizar, y
+- se renderiza seguido **con las mismas props** (porque el padre cambia por otra razón).
+
+Cuándo no sirve: si las props cambian en casi todos los renders, `memo` solo agrega el costo de comparar.
+
+<Pitfall title="memo no frena estado ni contexto">
+  `memo` solo mira las props. Si el componente cambia su propio estado o lee un contexto que cambió,
+  se renderiza igual.
+</Pitfall>
+
+<SayIt>
+  React.memo skips re-rendering a component when its props are shallowly equal to the previous ones.
+  It only helps for expensive components that often receive the same props, and only if objects and
+  functions keep the same reference.
+</SayIt>
+
+## ¿Para qué sirve useMemo?
+
+`useMemo(() => calcular(a, b), [a, b])` **guarda el resultado** de un cálculo entre renders. En el primer render ejecuta la función; en los siguientes, si ninguna dependencia cambió (`Object.is`), devuelve el valor guardado sin volver a calcular.
+
+Tiene dos usos distintos:
+
+1. **Evitar un cálculo caro**: filtrar, ordenar o agrupar miles de elementos.
+2. **Mantener la misma referencia** de un objeto o array, para que no rompa un `memo` de un hijo o no dispare un `useEffect` que lo tiene como dependencia.
+
+<Example title="sumar 20 000 entradas solo cuando cambia el filtro">
+
+```tsx
+// Sin useMemo: corre en cada render (también al escribir la nota)
+const plain = sumByProject(entries.filter((e) => e.hours >= minHours));
+
+// Con useMemo: solo cuando cambia minHours
+const memoized = useMemo(
+  () => sumByProject(entries.filter((e) => e.hours >= minHours)),
+  [minHours],
+);
+```
+
+<Live hint="escribe en la nota y luego mueve el slider">
+  <UseMemoDemo />
+</Live>
+
+</Example>
+
+<Tip title="¿Qué es 'caro'?">
+  La doc de React sugiere medir con `console.time` y considerar `useMemo` si un cálculo tarda **1 ms
+  o más**. Mide con el CPU throttling de DevTools: tu laptop es más rápida que el teléfono de tus
+  usuarios.
+</Tip>
+
+## ¿Para qué sirve useCallback?
+
+`useCallback(fn, deps)` **guarda la función misma**, no su resultado. Devuelve la misma referencia mientras las dependencias no cambien.
+
+¿Por qué importa? Cada render crea funciones nuevas: `onSelect` del render 1 y `onSelect` del render 2 son objetos distintos. Si pasas esa función a un hijo con `memo`, el hijo ve una prop "distinta" y se renderiza igual. `memo` se vuelve inútil.
+
+Por eso `memo`, `useMemo` y `useCallback` **funcionan en equipo**: `memo` en el hijo, y `useMemo` / `useCallback` en el padre para que las props no cambien de referencia.
+
+<Example title="memo + props estables">
+
+```tsx
+const MemoChart = memo(Chart);
+
+function Dashboard() {
+  const [note, setNote] = useState("");
+  const totals = useMemo(() => sumByProject(entries), [entries]); // misma referencia
+  const onSelect = useCallback((p: string) => setSelected(p), []); // misma función
+
+  return (
+    <>
+      <input value={note} onChange={(e) => setNote(e.target.value)} />
+      <MemoChart totals={totals} onSelect={onSelect} />
+    </>
+  );
+}
+```
+
+<Live hint="escribe con la casilla marcada y luego desmarcada">
+  <StablePropsDemo />
+</Live>
+
+</Example>
+
+Con la casilla desmarcada, el padre crea un objeto y una función nuevos en cada render, y `MemoChart` se renderiza en cada tecla aunque los datos sean idénticos.
+
+<SayIt>
+  useCallback returns the same function reference between renders while its dependencies don't
+  change. On its own it does nothing for performance; it matters when the function goes to a
+  memoized child or into an effect's dependencies.
+</SayIt>
+
+## ¿Cuál es la diferencia entre useMemo y useCallback?
+
+|            | `useMemo`                               | `useCallback`                           |
+| ---------- | --------------------------------------- | --------------------------------------- |
+| Guarda     | el **resultado** de llamar a la función | la **función**                          |
+| Devuelve   | un valor (número, objeto, array, JSX)   | una función                             |
+| Uso típico | cálculo caro, objeto estable            | handler estable para un hijo con `memo` |
+
+En realidad son lo mismo: `useCallback(fn, deps)` equivale a `useMemo(() => fn, deps)`.
+
+<SayIt>
+  useMemo caches the result of a function, useCallback caches the function itself. useCallback(fn, deps) is the
+  same as useMemo(() => fn, deps).
+</SayIt>
+
+## ¿Es buena idea usarlos siempre?
+
+**No.** Memoizar tiene costo y no siempre ahorra nada:
+
+- En cada render React igual crea la función que pasas a `useMemo` / `useCallback` y compara las dependencias.
+- Ocupa memoria: guarda el valor anterior.
+- Hace el código más difícil de leer, y un array de dependencias incompleto produce bugs (valores viejos).
+- `useCallback` sin un `memo` en el hijo **no evita ningún render**.
+
+Úsalos cuando:
+
+1. el cálculo es medible como caro,
+2. el valor va a un hijo con `memo`,
+3. el valor es dependencia de un `useEffect` y quieres que no se dispare en cada render,
+4. el valor sale de un custom hook que otros van a usar como dependencia.
+
+Antes de memoizar, prueba arreglos estructurales que suelen funcionar mejor:
+
+- **Bajar el estado**: si solo un hijo usa el estado, que viva en ese hijo, y el resto no se renderiza.
+- **Pasar JSX como `children`**: los `children` creados por el abuelo no se renderizan cuando el padre cambia su estado.
+
+<Compare>
+<Bad>
+
+```tsx
+// useCallback inútil: <button> no es memo
+const onClick = useCallback(() => setOpen(true), []);
+return <button onClick={onClick}>Abrir</button>;
+```
+
+</Bad>
+<Good>
+
+```tsx
+return <button onClick={() => setOpen(true)}>Abrir</button>;
+```
+
+</Good>
+</Compare>
+
+<SayIt>
+  No. Memoization has a cost and makes code harder to read, so I don't add it by default. I use it
+  when a calculation is measurably expensive, when the value goes to a memoized child, or when it's
+  an effect dependency. Often moving state down or passing children solves the problem without it.
+</SayIt>
+
+## Medir primero: el Profiler
+
+La regla de oro de la performance: **no optimices lo que no mediste**. Herramientas:
+
+- **React DevTools → Profiler**: graba una interacción y muestra qué componentes se renderizaron, cuánto tardó cada uno y **por qué** se renderizó (activa "Record why each component rendered").
+- **"Highlight updates when components render"** (en la configuración de React DevTools): pinta un borde en cada componente que se renderiza.
+- **Pestaña Performance** del navegador para ver tareas largas (más de 50 ms) que bloquean el hilo principal.
+- El componente `<Profiler>` mide desde el código (ver la página "use y otras APIs").
+
+El flujo: reproducir la lentitud → grabar → encontrar el componente caro → aplicar el arreglo más simple → volver a medir.
+
+<SayIt>
+  Before optimizing I record the interaction with the React DevTools Profiler to see which
+  components rendered, why, and how long they took. Then I apply the simplest fix and measure again.
+</SayIt>
+
+## ¿Qué es el React Compiler?
+
+Es una herramienta de **build** (un plugin de Babel, con integración en Vite y Next.js) que analiza tus componentes y hooks y **agrega la memoización automáticamente**, con más precisión que a mano: puede memoizar partes del JSX y valores intermedios, no solo lo que tú envuelves. Su versión 1.0 estable salió en 2025.
+
+Qué cambia en el día a día:
+
+- En código nuevo con el compilador activado, `useMemo`, `useCallback` y `memo` pasan a ser la **excepción** (por ejemplo, para controlar exactamente cuándo se dispara un efecto).
+- El compilador **asume que sigues las reglas de React**: componentes puros, no mutar props ni estado, no leer refs durante el render. Si un componente las rompe, lo salta (no lo optimiza). Por eso viene con reglas de ESLint que avisan de esos casos.
+- Se puede adoptar de forma incremental, carpeta por carpeta.
+
+```js
+// vite.config.ts (ejemplo)
+react({ babel: { plugins: ["babel-plugin-react-compiler"] } });
+```
+
+<SayIt>
+  The React Compiler is a build-time tool that adds memoization automatically, so manual useMemo and
+  useCallback become the exception. It relies on components following the rules of React, which is
+  why it ships with lint rules, and it can be adopted incrementally.
+</SayIt>

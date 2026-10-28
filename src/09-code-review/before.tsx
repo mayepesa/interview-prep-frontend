@@ -1,5 +1,5 @@
 // PR #142: "Add weekly hours widget"
-// Ejercicio: antes de leer el README de esta carpeta, busca los problemas de este archivo.
+// Ejercicio: antes de leer los comentarios de la página "Code review", busca los problemas.
 // Compila y "funciona", pero tiene al menos 10 problemas.
 
 import { useEffect, useState } from "react";

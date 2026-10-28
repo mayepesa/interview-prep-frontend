@@ -1,0 +1,655 @@
+import { Example, Run, SayIt, Pitfall, Tip, Compare, Bad, Good } from "../app/study";
+import {
+  createCounter,
+  memoize,
+  once,
+  loopWithVar,
+  loopWithLet,
+  timer,
+  callDetached,
+  callWithBind,
+} from "./closures-scope-this";
+
+export const meta = {
+  title: "Scope, closures y this",
+  section: "javascript",
+  order: 10,
+  summary:
+    "Tipos de datos, valor vs referencia, scope, var/let/const, hoisting, closures y las reglas de `this`. Es la base de casi todas las preguntas de JavaScript y de cómo funcionan los hooks de React.",
+};
+
+## ¿Qué tipos de datos tiene JavaScript? Valor vs referencia
+
+JavaScript tiene **7 tipos primitivos** y un tipo **objeto**:
+
+| Primitivos                                                             | Objetos (todo lo demás)                                     |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `string`, `number`, `bigint`, `boolean`, `undefined`, `null`, `symbol` | objetos literales, arrays, funciones, `Date`, `Map`, `Set`… |
+
+La diferencia importante para una entrevista es **cómo se copian y se comparan**:
+
+- Los **primitivos** son inmutables y se copian **por valor**: `let b = a` crea una copia independiente. Comparar con `===` compara el valor.
+- Los **objetos** se manejan **por referencia**: la variable guarda una "dirección" al objeto. `const b = a` hace que las dos variables apunten **al mismo objeto**; si mutas `b`, ves el cambio en `a`. Y `===` compara si son el mismo objeto, no si tienen el mismo contenido.
+
+Esto explica por qué en React nunca mutas el estado: React compara referencias (`Object.is`) para saber si algo cambió. Si mutas el mismo objeto, la referencia es igual y React cree que no pasó nada.
+
+<Example title="copiar un primitivo vs copiar un objeto">
+
+```js
+let a = 1;
+let b = a; // copia del valor
+b = 2;
+console.log(a); // 1
+
+const user = { name: "Ana" };
+const other = user; // copia de la referencia: el mismo objeto
+other.name = "Luis";
+console.log(user.name); // "Luis"
+
+console.log({ x: 1 } === { x: 1 }); // false: dos objetos distintos
+console.log(typeof null); // "object" (un bug histórico del lenguaje)
+```
+
+<Run
+  run={(log) => {
+    let a = 1;
+    let b = a;
+    b = 2;
+    log("a =", a);
+    const user = { name: "Ana" };
+    const other = user;
+    other.name = "Luis";
+    log("user.name =", user.name);
+    log("{ x: 1 } === { x: 1 } →", { x: 1 } === { x: 1 });
+    log("other === user →", other === user);
+    log("typeof null →", typeof null);
+    log("typeof [] →", typeof [], "· Array.isArray([]) →", Array.isArray([]));
+  }}
+/>
+
+</Example>
+
+<Tip title="typeof y sus trampas">
+  `typeof null` es `"object"` y `typeof []` también. Para arrays usa `Array.isArray`, y para null
+  compara directo: `value === null`.
+</Tip>
+
+<SayIt>
+  JavaScript has seven primitive types, which are copied by value, and objects, which are passed
+  around by reference. Two variables can point to the same object, so mutating one changes the
+  other, and triple equals on objects compares identity, not content. That's why React state must be
+  updated immutably.
+</SayIt>
+
+## ¿Qué es el scope? Global, función y bloque
+
+El **scope** (ámbito) es la zona del código donde una variable existe y se puede usar. JavaScript usa **scope léxico**: lo que una función puede ver depende de **dónde está escrita**, no de dónde se llama.
+
+Hay tres niveles:
+
+1. **Global**: variables declaradas fuera de cualquier función o bloque. Las ve todo el programa. En un módulo ES (lo normal hoy), el nivel superior es el _scope del módulo_, no el global: no se filtran a `window`.
+2. **De función**: lo que declaras dentro de una función solo existe ahí.
+3. **De bloque**: lo que declaras con `let` o `const` dentro de `{ }` (un `if`, un `for`, un bloque suelto) solo existe dentro de esas llaves. `var` **ignora** los bloques: solo respeta funciones.
+
+Cuando usas una variable, el motor la busca en el scope actual; si no está, sube al scope que lo contiene, y así hasta el global. Esa cadena se llama **scope chain**. Si no la encuentra, lanza `ReferenceError`.
+
+<Example title="la cadena de scopes y el scope de bloque">
+
+```js
+const app = "Planner"; // scope del módulo
+
+function report() {
+  const total = 8; // scope de la función
+  if (total > 5) {
+    let label = "largo"; // scope del bloque
+    var legacy = "var se escapa"; // var ignora el bloque
+    console.log(app, total, label); // sube por la cadena hasta encontrar app
+  }
+  console.log(legacy); // funciona: var es de función
+  console.log(typeof label); // "undefined": label no existe aquí
+}
+```
+
+<Run
+  run={(log) => {
+    const app = "Planner";
+    function report() {
+      const total = 8;
+      if (total > 5) {
+        let label = "largo";
+        var legacy = "var se escapa";
+        log(app, total, label);
+      }
+      log(legacy);
+      log("typeof label fuera del if →", typeof label);
+    }
+    report();
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Scope is where a variable is visible. JavaScript has global or module scope, function scope and
+  block scope, and it's lexical: a function sees the variables of the place where it was written.
+  Lookups walk up the scope chain until they find the variable or throw a ReferenceError.
+</SayIt>
+
+## var, let y const: ¿cuál es la diferencia?
+
+|                                             | `var`                             | `let`                               | `const`         |
+| ------------------------------------------- | --------------------------------- | ----------------------------------- | --------------- |
+| Scope                                       | función                           | bloque                              | bloque          |
+| Hoisting                                    | sí, inicializada como `undefined` | sí, pero en la _temporal dead zone_ | igual que `let` |
+| Reasignar                                   | sí                                | sí                                  | **no**          |
+| Redeclarar en el mismo scope                | sí (sin error)                    | error                               | error           |
+| Crea propiedad en `window` (script clásico) | sí                                | no                                  | no              |
+
+Puntos clave:
+
+- **`const` impide reasignar la variable, no mutar el valor.** Un array `const` acepta `push`; un objeto `const` acepta cambiar propiedades. Para congelar un objeto existe `Object.freeze` (superficial).
+- Regla práctica: **`const` por defecto, `let` cuando necesitas reasignar, `var` nunca** en código nuevo.
+
+<Example title="const no significa inmutable">
+
+```js
+const tags = ["dev"];
+tags.push("review"); // permitido: muta el array, no reasigna
+console.log(tags); // ["dev", "review"]
+
+try {
+  tags = []; // TypeError: Assignment to constant variable
+} catch (e) {
+  console.log(e.message);
+}
+
+const frozen = Object.freeze({ hours: 3 });
+frozen.hours = 10; // se ignora (en strict mode lanza TypeError)
+```
+
+<Run
+  run={(log) => {
+    const tags = ["dev"];
+    tags.push("review");
+    log(tags);
+    try {
+      new Function("const tags = []; tags = [];")();
+    } catch (e) {
+      log(`${e.name}: ${e.message}`);
+    }
+    const frozen = Object.freeze({ hours: 3 });
+    try {
+      frozen.hours = 10;
+    } catch (e) {
+      log(`${e.name}: ${e.message}`);
+    }
+    log("frozen.hours =", frozen.hours);
+  }}
+/>
+
+</Example>
+
+<Tip>
+  TypeScript y los linters marcan la reasignación de un `const` antes de ejecutar. El botón la
+  fuerza con `new Function(…)` solo para que veas el error que lanza el motor en runtime.
+</Tip>
+
+<SayIt>
+  var is function-scoped and hoisted as undefined. let and const are block-scoped and can't be used
+  before their declaration. const prevents reassignment, not mutation, so I use const by default,
+  let when I need to reassign, and never var.
+</SayIt>
+
+## ¿Qué es el hoisting y la temporal dead zone?
+
+Antes de ejecutar un scope, el motor de JavaScript lo recorre y **registra todas sus declaraciones**. A ese efecto de "las declaraciones existen desde el principio del scope" se le llama **hoisting** (elevación). Lo que cambia es _con qué valor_ existen:
+
+| Declaración                     | Antes de su línea vale…                     |
+| ------------------------------- | ------------------------------------------- |
+| `function foo() {}`             | la función completa: puedes llamarla antes  |
+| `var x`                         | `undefined`                                 |
+| `let x` / `const x` / `class X` | nada: usarla lanza `ReferenceError`         |
+| `const foo = () => {}`          | igual que `const`: no se puede llamar antes |
+
+La zona entre el inicio del scope y la línea de la declaración de un `let`/`const` se llama **temporal dead zone (TDZ)**. La variable existe (por eso tapa a una variable de afuera con el mismo nombre) pero no se puede leer todavía. Es un diseño a propósito: convierte en error lo que con `var` era un `undefined` silencioso.
+
+<Example title="hoisting de cada tipo de declaración">
+
+```js
+console.log(sum(2, 3)); // 5: las declaraciones de función se elevan completas
+function sum(a, b) {
+  return a + b;
+}
+
+console.log(count); // undefined: var se eleva sin su valor
+var count = 1;
+
+console.log(total); // ReferenceError: Cannot access 'total' before initialization
+let total = 10;
+```
+
+<Run
+  run={(log) => {
+    log("sum(2, 3) antes de declararla →", sum(2, 3));
+    function sum(a, b) {
+      return a + b;
+    }
+    log("count antes de declararla →", String(count));
+    var count = 1;
+    try {
+      new Function("console.log(total); let total = 10;")();
+    } catch (e) {
+      log(`${e.name}: ${e.message}`);
+    }
+  }}
+/>
+
+</Example>
+
+<Pitfall title="Arrow functions y hoisting">
+  `const handleClick = () => {}` **no** se puede usar antes de su línea, aunque `function handleClick() {}`
+  sí. Si cambias una por la otra y algo se rompe, suele ser esto.
+</Pitfall>
+
+<SayIt>
+  Hoisting means declarations are registered before the code runs. Function declarations are fully
+  hoisted, var is hoisted as undefined, and let and const are hoisted but stay in the temporal dead
+  zone, so reading them before the declaration throws a ReferenceError.
+</SayIt>
+
+## ¿Qué es un closure?
+
+Un **closure** es una función junto con las variables del scope donde fue creada. Cuando una función se crea dentro de otra, **se lleva una referencia a esas variables** y puede seguir usándolas aunque la función externa ya terminó de ejecutarse.
+
+¿Por qué funciona? Normalmente, cuando una función termina, sus variables locales se liberan. Pero si una función interna todavía las referencia, el motor las mantiene vivas mientras esa función interna exista.
+
+Para qué sirve:
+
+- **Estado privado**: variables que nadie de afuera puede tocar (como `count` abajo).
+- **Fábricas de funciones**: `debounce`, `memoize`, `once`, `throttle` devuelven funciones que recuerdan su temporizador o su caché.
+- **React**: cada render crea funciones nuevas (handlers, efectos) que "cierran" sobre las props y el estado de **ese** render. De ahí salen las _stale closures_: un `setInterval` que lee un estado viejo.
+
+Cada llamada a la función externa crea un **closure nuevo e independiente**.
+
+<Example title="un contador con estado privado">
+
+```js
+function createCounter(start = 0) {
+  let count = start; // privada: solo la ven las funciones de abajo
+  return {
+    increment: () => ++count,
+    decrement: () => --count,
+    value: () => count,
+  };
+}
+
+const a = createCounter(10);
+a.increment();
+a.increment();
+console.log(a.value()); // 12
+console.log(a.count); // undefined: no hay forma de tocarla desde afuera
+
+const b = createCounter();
+console.log(b.value()); // 0: cada llamada crea su propio closure
+```
+
+<Run
+  run={(log) => {
+    const a = createCounter(10);
+    a.increment();
+    a.increment();
+    log("a.value() →", a.value());
+    log("a.count →", String(a.count));
+    const b = createCounter();
+    log("b.value() →", b.value());
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  A closure is a function that remembers the variables of the scope where it was created, even after
+  that outer function has returned. It's how we get private state and function factories like
+  debounce or memoize, and it's also why React handlers see the props and state of the render they
+  were created in.
+</SayIt>
+
+## Closures en la práctica: memoize y once
+
+Dos implementaciones típicas de entrevista que solo funcionan gracias a closures:
+
+- **`memoize(fn)`** devuelve una función que guarda los resultados en una caché (un `Map`) que vive en el closure. Si la llamas otra vez con el mismo argumento, devuelve el resultado guardado sin recalcular. Sirve para funciones **puras** y caras.
+- **`once(fn)`** devuelve una función que solo ejecuta `fn` la primera vez y después devuelve siempre el mismo resultado. Sirve para inicializaciones (cargar un SDK, registrar un listener global).
+
+<Example title="memoize y once (están en closures-scope-this.ts, con tests)">
+
+```ts
+export function memoize<A extends string | number, R>(fn: (arg: A) => R) {
+  const cache = new Map<A, R>(); // vive en el closure
+  return (arg: A): R => {
+    if (cache.has(arg)) return cache.get(arg)!;
+    const result = fn(arg);
+    cache.set(arg, result);
+    return result;
+  };
+}
+
+export function once<Args extends unknown[], R>(fn: (...args: Args) => R) {
+  let called = false; // vive en el closure
+  let result: R;
+  return (...args: Args): R => {
+    if (!called) {
+      called = true;
+      result = fn(...args);
+    }
+    return result;
+  };
+}
+```
+
+<Run
+  run={(log) => {
+    let calls = 0;
+    const slowSquare = (n) => {
+      calls++;
+      return n * n;
+    };
+    const fastSquare = memoize(slowSquare);
+    log("fastSquare(9) →", fastSquare(9));
+    log("fastSquare(9) →", fastSquare(9));
+    log("fastSquare(4) →", fastSquare(4));
+    log("slowSquare se ejecutó", calls, "veces");
+    const init = once(() => {
+      log("  inicializando SDK…");
+      return "ready";
+    });
+    log("init() →", init());
+    log("init() →", init());
+  }}
+/>
+
+</Example>
+
+<Pitfall title="La caché crece para siempre">
+  Un `memoize` simple nunca borra entradas. Con muchos argumentos distintos es una fuga de memoria.
+  En producción se limita el tamaño (LRU) o se usa un `WeakMap` cuando las claves son objetos.
+</Pitfall>
+
+<SayIt>
+  Memoize and once are closures over private state: memoize keeps a cache map, and once keeps a flag
+  and the first result. Memoize only makes sense for pure functions, and an unbounded cache can leak
+  memory, so in real code I'd cap its size.
+</SayIt>
+
+## La pregunta clásica: un for con var y setTimeout
+
+```js
+for (var i = 0; i < 3; i++) {
+  setTimeout(() => console.log(i), 0);
+}
+// ¿Qué imprime?
+```
+
+Imprime **`3, 3, 3`**. Por qué:
+
+1. `var` tiene scope de **función**: hay **una sola variable `i`** para todo el loop.
+2. Los tres callbacks de `setTimeout` se ejecutan **después** de que termina el loop (son macrotareas; ver la página del event loop).
+3. Para entonces `i` ya vale `3`, y los tres closures apuntan a la misma `i`.
+
+Con **`let`** imprime `0, 1, 2`, porque `let` en un `for` crea **una variable nueva en cada iteración**, y cada callback cierra sobre la suya.
+
+Antes de `let` (ES2015) se arreglaba con una IIFE (_Immediately Invoked Function Expression_) que creaba un scope por iteración, o pasando `i` como tercer argumento de `setTimeout`.
+
+<Example title="var vs let vs IIFE">
+
+```js
+for (var i = 0; i < 3; i++) setTimeout(() => console.log("var", i), 0);
+
+for (let j = 0; j < 3; j++) setTimeout(() => console.log("let", j), 0);
+
+for (var k = 0; k < 3; k++) {
+  ((copy) => setTimeout(() => console.log("IIFE", copy), 0))(k);
+}
+```
+
+<Run
+  run={async (log) => {
+    for (var i = 0; i < 3; i++) setTimeout(() => log("var", i), 0);
+    for (let j = 0; j < 3; j++) setTimeout(() => log("let", j), 0);
+    for (var k = 0; k < 3; k++) {
+      ((copy) => setTimeout(() => log("IIFE", copy), 0))(k);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+    log("sin setTimeout, con funciones guardadas:", loopWithVar(), "vs", loopWithLet());
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  It logs 3, 3, 3. var creates a single binding for the whole loop, and the timeouts run after the
+  loop finishes, so all three closures read the final value. With let, each iteration gets its own
+  binding, so it logs 0, 1, 2.
+</SayIt>
+
+## ¿Cómo funciona this?
+
+`this` es un valor que JavaScript pasa implícitamente a cada función **normal** (no arrow). La regla de oro: **`this` depende de cómo se llama la función, no de dónde se escribió**. Hay cuatro formas de llamar a una función, en orden de prioridad:
+
+| Cómo se llama                                     | Qué vale `this`                                                                         |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `new Foo()`                                       | el objeto nuevo que se está creando                                                     |
+| `fn.call(obj)`, `fn.apply(obj)`, `fn.bind(obj)()` | `obj` (binding explícito)                                                               |
+| `obj.method()`                                    | `obj`: lo que está a la izquierda del punto                                             |
+| `fn()` suelta                                     | `undefined` en strict mode (módulos, clases); `globalThis` en scripts viejos sin strict |
+
+El caso que más bugs causa: **sacar un método de su objeto**. `const fn = obj.method; fn()` es una llamada suelta, así que `this` se pierde. Pasa igual al pasar un método como callback: `button.addEventListener("click", obj.method)` o `setTimeout(obj.method)`.
+
+<Example title="el mismo método llamado de formas distintas">
+
+```js
+const timer = {
+  label: "timer",
+  regular() {
+    return this?.label;
+  },
+};
+
+timer.regular(); // "timer": se llamó como método
+
+const fn = timer.regular;
+fn(); // undefined: llamada suelta, this se perdió
+
+function Project(name) {
+  // con new, this es el objeto nuevo
+  this.name = name;
+}
+new Project("Atlas").name; // "Atlas"
+```
+
+<Run
+  run={(log) => {
+    log("timer.regular() →", timer.regular());
+    log("llamada suelta →", String(callDetached()));
+    function Project(name) {
+      this.name = name;
+    }
+    log("new Project('Atlas').name →", new Project("Atlas").name);
+    const later = (cb) => cb();
+    log("pasado como callback →", String(later(timer.regular)));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  this depends on how a function is called, not where it's defined. With new it's the new object,
+  with call, apply or bind it's whatever you pass, as a method it's the object before the dot, and
+  as a plain call it's undefined in strict mode. The classic bug is passing a method as a callback
+  and losing this.
+</SayIt>
+
+## bind, call y apply
+
+Los tres fijan `this` a mano:
+
+- **`fn.call(thisArg, a, b)`**: llama a la función **ahora**, con los argumentos uno por uno.
+- **`fn.apply(thisArg, [a, b])`**: igual, pero los argumentos van en un **array**. (Mnemotecnia: *a*pply = *a*rray.)
+- **`fn.bind(thisArg, a)`**: **no llama**; devuelve una **función nueva** con `this` fijado para siempre (y opcionalmente argumentos pre-cargados: _partial application_). Una función ya "bindeada" no se puede volver a bindear.
+
+Hoy `apply` se usa poco porque el spread lo reemplaza (`fn(...args)`), y `bind` se usa sobre todo para pasar métodos como callbacks sin perder `this`.
+
+<Example title="los tres en acción">
+
+```js
+function greet(greeting, punctuation) {
+  return `${greeting}, ${this.name}${punctuation}`;
+}
+const ana = { name: "Ana" };
+
+greet.call(ana, "Hola", "!"); // "Hola, Ana!"
+greet.apply(ana, ["Hola", "?"]); // "Hola, Ana?"
+
+const helloAna = greet.bind(ana, "Hola");
+helloAna("."); // "Hola, Ana."
+helloAna.call({ name: "Luis" }, "!"); // sigue siendo Ana: bind gana
+```
+
+<Run
+  run={(log) => {
+    function greet(greeting, punctuation) {
+      return `${greeting}, ${this.name}${punctuation}`;
+    }
+    const ana = { name: "Ana" };
+    log(greet.call(ana, "Hola", "!"));
+    log(greet.apply(ana, ["Hola", "?"]));
+    const helloAna = greet.bind(ana, "Hola");
+    log(helloAna("."));
+    log(helloAna.call({ name: "Luis" }, "!"));
+    log("bind del módulo →", callWithBind());
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  call and apply invoke the function immediately with a given this; call takes arguments one by one
+  and apply takes an array. bind doesn't call it: it returns a new function with this permanently
+  fixed, which is useful when passing a method as a callback.
+</SayIt>
+
+## Arrow functions y this
+
+Las **arrow functions no tienen `this` propio**. Usan el `this` del scope donde fueron **escritas** (scope léxico), igual que cualquier otra variable. Consecuencias:
+
+- `call`, `apply` y `bind` **no pueden cambiar** su `this`.
+- Son ideales **dentro** de un método, para callbacks (`setTimeout`, `map`, `then`) que necesitan el `this` del método.
+- Una `function` normal pasada como callback a `setTimeout` pierde el `this` del método: el navegador la llama con `this = window`.
+- **No sirven como métodos** de un objeto literal: `{ label: "x", get: () => this.label }` no ve al objeto, ve el `this` del módulo (`undefined`).
+- No se pueden usar con `new` y no tienen `arguments`.
+
+En React con componentes de función casi no usas `this`; aparece en componentes de clase, en código legacy y en preguntas de entrevista.
+
+<Example title="arrow dentro de un método vs arrow como método">
+
+<Compare>
+<Bad>
+
+```js
+const project = {
+  name: "Atlas",
+  getName: () => this?.name, // this del módulo
+};
+project.getName(); // undefined
+```
+
+</Bad>
+<Good>
+
+```js
+const project = {
+  name: "Atlas",
+  later() {
+    // la arrow usa el this de later()
+    setTimeout(() => console.log(this.name), 0);
+  },
+};
+project.later(); // "Atlas"
+```
+
+</Good>
+</Compare>
+
+<Run
+  run={async (log) => {
+    const project = {
+      name: "Atlas",
+      getName: () => undefined,
+      laterArrow() {
+        setTimeout(() => log("arrow dentro del método →", this.name), 0);
+      },
+      laterRegular() {
+        setTimeout(function () {
+          log("function dentro del método → this es window:", this === globalThis);
+        }, 0);
+      },
+    };
+    log("arrow como método →", String(project.getName()));
+    project.laterArrow();
+    project.laterRegular();
+    log("timer.arrowInside() →", timer.arrowInside());
+    await new Promise((r) => setTimeout(r, 20));
+  }}
+/>
+
+</Example>
+
+<Tip>
+  En el ejemplo ejecutable, `getName` devuelve `undefined` directamente: en un módulo ES el `this`
+  del nivel superior es `undefined`, así que `this?.name` daría lo mismo.
+</Tip>
+
+<SayIt>
+  Arrow functions don't have their own this; they take it from the surrounding scope, and bind can't
+  change it. That makes them great for callbacks inside a method, but wrong as object methods.
+</SayIt>
+
+## == vs ===
+
+- **`===` (igualdad estricta)** compara tipo y valor, sin conversiones. Para objetos compara la referencia.
+- **`==` (igualdad débil)** primero **convierte los tipos** (_coerción_) con reglas difíciles de recordar, y luego compara.
+- **`Object.is`** es como `===` salvo en dos casos: `Object.is(NaN, NaN)` es `true` y `Object.is(0, -0)` es `false`. Es lo que usa React para comparar estado y dependencias.
+
+Regla práctica: **usa siempre `===`**. La única excepción aceptada por muchos equipos es `value == null`, que es `true` para `null` y `undefined` a la vez (aunque hoy se escribe más claro con `??` o `value === null || value === undefined`).
+
+<Example title="las sorpresas de ==">
+
+```js
+"1" == 1; // true  (el string se convierte a número)
+0 == ""; // true
+null == undefined; // true
+null == 0; // false
+[] == false; // true  ([] → "" → 0, false → 0)
+NaN === NaN; // false: NaN no es igual a nada
+Object.is(NaN, NaN); // true
+```
+
+<Run
+  run={(log) => {
+    log('"1" == 1 →', "1" == 1, '· "1" === 1 →', "1" === 1);
+    log('0 == "" →', 0 == "");
+    log("null == undefined →", null == undefined, "· null === undefined →", null === undefined);
+    log("null == 0 →", null == 0);
+    log("[] == false →", [] == false);
+    log("NaN === NaN →", NaN === NaN, "· Object.is(NaN, NaN) →", Object.is(NaN, NaN));
+    log("0 === -0 →", 0 === -0, "· Object.is(0, -0) →", Object.is(0, -0));
+  }}
+/>
+
+</Example>
+
+<SayIt>
+  Triple equals compares type and value with no conversion; double equals coerces types first, which
+  leads to surprises like an empty array being equal to false. I always use triple equals. React
+  uses Object.is, which is like triple equals but treats NaN as equal to itself.
+</SayIt>

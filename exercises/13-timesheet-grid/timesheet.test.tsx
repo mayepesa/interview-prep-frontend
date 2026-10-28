@@ -6,12 +6,15 @@ import * as starter from "./starter";
 
 const { TimesheetGrid } = (process.env.SOLUTIONS ? solution : starter) as typeof solution;
 
+// Los tests de un ejercicio no corren hasta que pongas `started = true` en starter.
+const suite = process.env.SOLUTIONS || starter.started ? describe : describe.skip;
+
 const projects = ["Planner", "Reports"];
 const days = ["Mon", "Tue", "Wed"];
 
 const total = (label: string) => screen.getByLabelText(`Total ${label}`).textContent;
 
-describe("13 · timesheet grid", () => {
+suite("13 · timesheet grid", () => {
   it("renders an empty grid with zero totals", () => {
     render(<TimesheetGrid projects={projects} days={days} />);
     expect(screen.getAllByRole("spinbutton")).toHaveLength(6);
