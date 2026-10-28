@@ -53,7 +53,10 @@ export function App() {
   const next = pages[index + 1];
   const { ref, headings } = useHeadings(current?.id ?? "");
 
-  useEffect(() => window.scrollTo(0, 0), [current?.id]);
+  // Con llaves: en Chrome reciente scrollTo devuelve una promesa, y un efecto solo puede devolver su cleanup.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [current?.id]);
 
   return (
     <div className="layout">

@@ -133,6 +133,22 @@ function Clock() {
   cleanup no quita nada.
 </Pitfall>
 
+<Pitfall title="Un efecto solo puede devolver su cleanup">
+
+Con una arrow function sin llaves, el efecto **devuelve** lo que devuelva esa expresión. Si es una promesa (por ejemplo `useEffect(async () => …)`, o `window.scrollTo`, que en Chrome reciente devuelve una promesa), React la toma como cleanup y falla con _"destroy is not a function"_.
+
+```tsx
+useEffect(() => window.scrollTo(0, 0), [page]); // ✗ devuelve lo que devuelva scrollTo
+
+useEffect(() => {
+  window.scrollTo(0, 0); // ✓ con llaves no devuelve nada
+}, [page]);
+```
+
+Para usar `await`, define la función async **dentro** del efecto y llámala.
+
+</Pitfall>
+
 ## ¿Cómo ejecutar código al montar y al desmontar?
 
 Con un efecto de dependencias vacías: el setup corre al **montar** y el cleanup al **desmontar**.
